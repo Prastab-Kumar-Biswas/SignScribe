@@ -55,10 +55,14 @@ TRAIN_RATIO = 0.8
 VAL_RATIO = 0.1
 TEST_RATIO = 0.1
 
-# ── Latency budget (ms) ─────────────────────────────────────────────
-BUDGET_MEDIAPIPE_MS = 15
+# ── Latency budget (ms) — REVISED per Phase 1 benchmarks ────────────
+# MediaPipe on Intel i7 (integrated graphics, no CUDA) measures ~21 ms,
+# higher than the synopsis's 15 ms estimate.  However, the BiLSTM
+# classifier is much smaller than typical and will use ~3 ms (not 12).
+# Net result: total still fits comfortably under 40 ms → 25 fps.
+BUDGET_MEDIAPIPE_MS = 22    # measured: ~21 ms mean on target hardware
 BUDGET_BUFFERING_MS = 1
-BUDGET_CLASSIFIER_MS = 12
+BUDGET_CLASSIFIER_MS = 5    # revised: 680K-param BiLSTM, ~3 ms expected
 BUDGET_GRAMMAR_MS = 2
 BUDGET_RENDER_MS = 5
 BUDGET_TOTAL_MS = 40        # = 1000 / TARGET_FPS

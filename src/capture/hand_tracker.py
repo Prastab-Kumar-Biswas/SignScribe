@@ -56,7 +56,7 @@ class HandTracker:
         max_hands: int = NUM_HANDS,
         detection_confidence: float = 0.7,
         tracking_confidence: float = 0.5,
-        process_scale: float = 0.5,
+        process_scale: float = 1.0,
     ):
         self.mp_hands = mp.solutions.hands
         self.mp_drawing = mp.solutions.drawing_utils
