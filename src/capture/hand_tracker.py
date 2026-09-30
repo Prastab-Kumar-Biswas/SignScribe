@@ -42,8 +42,13 @@ class HandTracker:
     """Wraps MediaPipe Hands for real-time landmark extraction.
 
     Design note: we use `model_complexity=0` (lite model) because it's
-    the fastest option and keeps us within the 15 ms budget on CPU.
-    `max_num_hands=2` matches our 2-hand feature vector design.
+    the fastest option on CPU.  `max_num_hands=2` matches our 2-hand
+    feature vector design.
+
+    `process_scale` controls optional frame downscaling before feeding
+    MediaPipe.  Since landmarks are normalized 0-1, downscaling doesn't
+    affect feature quality — it just reduces the pixel count the palm
+    detector has to scan, which can significantly cut latency.
     """
 
     def __init__(
@@ -51,10 +56,12 @@ class HandTracker:
         max_hands: int = NUM_HANDS,
         detection_confidence: float = 0.7,
         tracking_confidence: float = 0.5,
+        process_scale: float = 0.5,
     ):
         self.mp_hands = mp.solutions.hands
         self.mp_drawing = mp.solutions.drawing_utils
         self.mp_drawing_styles = mp.solutions.drawing_styles
+        self.process_scale = process_scale
 
         self.hands = self.mp_hands.Hands(
             static_image_mode=False,       # video mode → faster tracking
@@ -75,7 +82,17 @@ class HandTracker:
                       hand's 63 values are filled with zeros.
             results:  The raw MediaPipe results object (for drawing).
         """
-        results = self.hands.process(frame_rgb)
+        # Optionally downscale for faster processing
+        if self.process_scale < 1.0:
+            h, w = frame_rgb.shape[:2]
+            small = cv2.resize(
+                frame_rgb,
+                (int(w * self.process_scale), int(h * self.process_scale)),
+                interpolation=cv2.INTER_LINEAR,
+            )
+            results = self.hands.process(small)
+        else:
+            results = self.hands.process(frame_rgb)
 
         # Initialise with zeros — missing hands stay as zero-vectors
         features = np.zeros(FEATURE_DIM, dtype=np.float32)
