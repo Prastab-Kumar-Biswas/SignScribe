@@ -526,7 +526,7 @@ def render_webcam_mode(tracker, classifier, rule_mapper, llm_mapper, confidence_
                 video_placeholder.image(
                     cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB),
                     channels="RGB",
-                    use_container_width=True,
+                    use_column_width=True,
                 )
 
                 # Throttle
