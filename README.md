@@ -120,14 +120,44 @@ signscribe/
 
 | Phase | Modules | Status |
 |-------|---------|--------|
-| 0 — Scaffold | Repo structure, configs | ✅ Done |
-| 1 — Webcam + MediaPipe | M1, M2 | ⬜ Next |
-| 2 — Buffer + Recorder | M3 | ⬜ |
-| 3 — Classifier | M4 | ⬜ |
-| 4 — Rule-based Mapper | M5a | ⬜ |
-| 5 — LLM Fine-tuning | M5b (Colab) | ⬜ |
-| 6 — Evaluation | M6 | ⬜ |
-| 7 — Demo App | M7 | ⬜ |
+| 0 — Scaffold | Repo structure, configs | Done |
+| 1 — Webcam + MediaPipe | M1, M2 | Done |
+| 2 — Buffer + Recorder | M3 | Done |
+| 3 — Classifier | M4 | Done |
+| 4 — Rule-based Mapper | M5a | Done |
+| 5 — LLM Fine-tuning | M5b (Colab) | Done |
+| 6 — Evaluation | M6 | Done |
+| 7 — Demo App | M7 | Done |
+
+---
+
+## Running the Demo
+
+```bash
+# Make sure venv is activated, classifier is trained, and you're in the project root
+streamlit run src/demo/app.py
+```
+
+The demo has three tabs:
+- **Live Webcam** — real-time gesture recognition with both translation paths
+- **Manual Input** — type gloss tokens to test translations without webcam
+- **Evaluation** — side-by-side comparison table with BLEU-4 and hallucination rate
+
+---
+
+## Running the Data Recorder
+
+```bash
+python -m src.buffering.data_recorder
+```
+
+## Training the Classifier (locally)
+
+```bash
+python -m src.classifier.train --epochs 50 --batch-size 32
+```
+
+Or use the Colab notebook (`colab/llm_finetune.ipynb`) for faster GPU training.
 
 ---
 
