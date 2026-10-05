@@ -34,15 +34,28 @@ LSTM_DROPOUT = 0.3
 
 # ── Vocabulary ────────────────────────────────────────────────────────
 # 26 letters + 10 digits + 60 ISL words = 96 total classes
-# ⚠️  The ISL_WORDS list is a PLACEHOLDER — replace with your actual
-#     curated list before recording data.  The 26 letters and 10 digits
-#     are auto-generated below.
 ALPHABETS = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 DIGITS = [str(d) for d in range(10)]
 ISL_WORDS: list[str] = [
-    # --- TODO: fill in your 60 common ISL words ---
-    # Example entries (remove and replace with real list):
-    # "HELLO", "THANK_YOU", "PLEASE", "SORRY", "YES", "NO", ...
+    # --- Greetings / Social (11) ---
+    "HELLO", "GOODBYE", "THANK_YOU", "SORRY", "PLEASE",
+    "YES", "NO", "WELCOME", "OK",
+    "GOOD_MORNING", "GOOD_NIGHT",
+    # --- Common Verbs (18) ---
+    "GO", "COME", "EAT", "DRINK", "WANT", "NEED",
+    "HELP", "LIKE", "LOVE", "LEARN", "WORK", "PLAY",
+    "GIVE", "TAKE", "SEE", "READ", "WRITE", "STOP",
+    # --- People / Relations (7) ---
+    "FRIEND", "FAMILY", "TEACHER", "STUDENT", "DOCTOR",
+    "CHILD", "MOTHER",
+    # --- Places (6) ---
+    "SCHOOL", "HOME", "HOSPITAL", "MARKET", "OFFICE", "PARK",
+    # --- Things (8) ---
+    "FOOD", "WATER", "BOOK", "PHONE", "MONEY", "CAR", "BUS", "HOUSE",
+    # --- Adjectives (5) ---
+    "GOOD", "BAD", "HAPPY", "SAD", "BIG",
+    # --- Time / Tense markers (5) ---
+    "TODAY", "TOMORROW", "YESTERDAY", "NOW", "FINISH",
 ]
 VOCAB = ALPHABETS + DIGITS + ISL_WORDS
 NUM_CLASSES = len(VOCAB)  # should be 96 when ISL_WORDS has 60 entries
