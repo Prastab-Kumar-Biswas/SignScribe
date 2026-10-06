@@ -54,42 +54,27 @@ LOCATION_NOUNS = {
 # Common verbs and their base/3rd-person/past forms
 # Format: GLOSS -> (base, 3rd_person_singular, past)
 VERB_FORMS: dict[str, tuple[str, str, str]] = {
-    "GO":       ("go",      "goes",     "went"),
+    # -- Verbs from the Kaggle video dataset --
+    "BREAK":    ("break",   "breaks",   "broke"),
+    "CLEAN":    ("clean",   "cleans",   "cleaned"),
+    "CLOSE":    ("close",   "closes",   "closed"),
     "COME":     ("come",    "comes",    "came"),
-    "EAT":      ("eat",     "eats",     "ate"),
+    "COOK":     ("cook",    "cooks",    "cooked"),
+    "CRY":      ("cry",     "cries",    "cried"),
     "DRINK":    ("drink",   "drinks",   "drank"),
-    "WANT":     ("want",    "wants",    "wanted"),
-    "NEED":     ("need",    "needs",    "needed"),
-    "LIKE":     ("like",    "likes",    "liked"),
-    "LOVE":     ("love",    "loves",    "loved"),
-    "HELP":     ("help",    "helps",    "helped"),
-    "WORK":     ("work",    "works",    "worked"),
-    "PLAY":     ("play",    "plays",    "played"),
-    "LEARN":    ("learn",   "learns",   "learned"),
-    "TEACH":    ("teach",   "teaches",  "taught"),
-    "MAKE":     ("make",    "makes",    "made"),
     "GIVE":     ("give",    "gives",    "gave"),
-    "TAKE":     ("take",    "takes",    "took"),
+    "HUG":      ("hug",     "hugs",     "hugged"),
+    "JUMP":     ("jump",    "jumps",    "jumped"),
+    "POUR":     ("pour",    "pours",    "poured"),
+    "SWITCH":   ("switch",  "switches", "switched"),
+    # -- Additional verbs for richer sentence building --
+    "GO":       ("go",      "goes",     "went"),
+    "EAT":      ("eat",     "eats",     "ate"),
     "SEE":      ("see",     "sees",     "saw"),
-    "HEAR":     ("hear",    "hears",    "heard"),
-    "SPEAK":    ("speak",   "speaks",   "spoke"),
-    "TELL":     ("tell",    "tells",    "told"),
-    "ASK":      ("ask",     "asks",     "asked"),
-    "KNOW":     ("know",    "knows",    "knew"),
-    "THINK":    ("think",   "thinks",   "thought"),
-    "FEEL":     ("feel",    "feels",    "felt"),
-    "LIVE":     ("live",    "lives",    "lived"),
-    "WALK":     ("walk",    "walks",    "walked"),
-    "RUN":      ("run",     "runs",     "ran"),
-    "SIT":      ("sit",     "sits",     "sat"),
-    "STAND":    ("stand",   "stands",   "stood"),
-    "SLEEP":    ("sleep",   "sleeps",   "slept"),
-    "CALL":     ("call",    "calls",    "called"),
-    "BUY":      ("buy",     "buys",     "bought"),
+    "LIKE":     ("like",    "likes",    "liked"),
+    "WANT":     ("want",    "wants",    "wanted"),
     "READ":     ("read",    "reads",    "read"),
     "WRITE":    ("write",   "writes",   "wrote"),
-    "STOP":     ("stop",    "stops",    "stopped"),
-    "WAIT":     ("wait",    "waits",    "waited"),
     "THANK":    ("thank",   "thanks",   "thanked"),
 }
 
@@ -115,23 +100,30 @@ THIRD_PERSON_SINGULAR = {"HE", "SHE", "IT"}
 FIXED_PHRASES: dict[str, str] = {
     "HELLO": "Hello.",
     "THANK_YOU": "Thank you.",
-    "SORRY": "Sorry.",
-    "PLEASE": "Please.",
-    "YES": "Yes.",
-    "NO": "No.",
     "GOOD_MORNING": "Good morning.",
-    "GOOD_NIGHT": "Good night.",
-    "GOODBYE": "Goodbye.",
-    "WELCOME": "Welcome.",
-    "OK": "OK.",
+    "GOOD_AFTERNOON": "Good afternoon.",
+    "WHAT_IS_YOUR_NAME": "What is your name?",
+    "MAYBE": "Maybe.",
+    "WRONG": "That is wrong.",
+    "FEDUP": "I am fed up.",
 }
 
 # Words that should get an article inserted before them
 # (simple heuristic -- nouns that aren't proper nouns or pronouns)
 COMMON_NOUNS = LOCATION_NOUNS | {
-    "BOOK", "WATER", "FOOD", "PHONE", "NAME", "FAMILY",
-    "FRIEND", "DOCTOR", "TEACHER", "STUDENT", "CHILD",
-    "CAR", "BUS", "TRAIN", "HOUSE", "ROOM",
+    # Animals
+    "BEAR", "CROCODILE", "DEER", "ELEPHANT", "GIRAFFE",
+    "LION", "MONKEY", "PEACOCK", "PIGEON", "SPARROW",
+    "TIGER", "TURTLE",
+    # Vegetables / Food
+    "BRINJAL", "CABBAGE", "CARROT", "CAULIFLOWER", "CHILLI",
+    "CUCUMBER", "ONION", "RADISH", "LEMON", "TEA",
+    # People
+    "MAN", "UNCLE", "WIFE", "WRITER",
+    # Objects
+    "BUDGET", "KEY", "KNIFE", "UMBRELLA", "VOLCANO",
+    # Other
+    "EXAM", "INTERVIEW", "INJURY", "FEVER", "MATHS",
 }
 
 # Vowel-starting words get "an" instead of "a"
@@ -386,22 +378,23 @@ def demo():
     mapper = RuleBasedMapper()
 
     examples = [
-        "I SCHOOL GO",
-        "I FOOD EAT",
-        "HE HOSPITAL GO PAST",
-        "SHE BOOK READ",
-        "I WATER DRINK FUTURE",
         "HELLO",
         "THANK_YOU",
-        "H E L L O",
-        "YOU HELP WANT",
-        "WE PARK GO TOMORROW",
-        "I FRIEND HELP",
-        "HE TEACHER ASK",
+        "GOOD_MORNING",
+        "WHAT_IS_YOUR_NAME",
+        "I TEA DRINK",
+        "HE CARROT COOK",
+        "SHE ELEPHANT SEE",
+        "I TEMPLE COME",
+        "MONKEY JUMP",
+        "LION BEAR SEE",
+        "I UMBRELLA GIVE",
+        "MAN KNIFE CLOSE",
+        "HE EXAM WRITE",
     ]
 
     print("=" * 60)
-    print("  SignScribe - Rule-Based Grammar Mapper Demo (Phase 4)")
+    print("  SignScribe - Rule-Based Grammar Mapper Demo")
     print("=" * 60)
     print()
 

@@ -34,28 +34,33 @@ LSTM_DROPOUT = 0.3
 
 # ── Vocabulary ────────────────────────────────────────────────────────
 # 26 letters + 10 digits + 60 ISL words = 96 total classes
+# ISL words sourced from: kaggle.com/datasets/prasadshet/indian-sign-language-video-dataset
 ALPHABETS = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 DIGITS = [str(d) for d in range(10)]
 ISL_WORDS: list[str] = [
-    # --- Greetings / Social (11) ---
-    "HELLO", "GOODBYE", "THANK_YOU", "SORRY", "PLEASE",
-    "YES", "NO", "WELCOME", "OK",
-    "GOOD_MORNING", "GOOD_NIGHT",
-    # --- Common Verbs (18) ---
-    "GO", "COME", "EAT", "DRINK", "WANT", "NEED",
-    "HELP", "LIKE", "LOVE", "LEARN", "WORK", "PLAY",
-    "GIVE", "TAKE", "SEE", "READ", "WRITE", "STOP",
-    # --- People / Relations (7) ---
-    "FRIEND", "FAMILY", "TEACHER", "STUDENT", "DOCTOR",
-    "CHILD", "MOTHER",
-    # --- Places (6) ---
-    "SCHOOL", "HOME", "HOSPITAL", "MARKET", "OFFICE", "PARK",
-    # --- Things (8) ---
-    "FOOD", "WATER", "BOOK", "PHONE", "MONEY", "CAR", "BUS", "HOUSE",
-    # --- Adjectives (5) ---
-    "GOOD", "BAD", "HAPPY", "SAD", "BIG",
-    # --- Time / Tense markers (5) ---
-    "TODAY", "TOMORROW", "YESTERDAY", "NOW", "FINISH",
+    # --- Animals (10) ---
+    "BEAR", "CROCODILE", "DEER", "ELEPHANT", "GIRAFFE",
+    "LION", "MONKEY", "PEACOCK", "PIGEON", "SPARROW",
+    # --- Vegetables / Food (8) ---
+    "BRINJAL", "CABBAGE", "CARROT", "CAULIFLOWER", "CHILLI",
+    "CUCUMBER", "ONION", "RADISH",
+    # --- Actions / Verbs (10) ---
+    "BREAK", "CLEAN", "CLOSE", "COME", "COOK",
+    "CRY", "DRINK", "GIVE", "HUG", "JUMP",
+    # --- Greetings / Phrases (4) ---
+    "HELLO", "GOOD_MORNING", "GOOD_AFTERNOON", "THANK_YOU",
+    # --- People / Relations (4) ---
+    "MAN", "UNCLE", "WIFE", "WRITER",
+    # --- Things / Objects (6) ---
+    "BUDGET", "KEY", "KNIFE", "TEA", "UMBRELLA", "VEGETABLES",
+    # --- Places / Proper nouns (2) ---
+    "KARNATAKA", "TEMPLE",
+    # --- Adjectives / States (6) ---
+    "BUSY", "FEDUP", "FEVER", "INJURY", "STILL", "WRONG",
+    # --- Other (5) ---
+    "EXAM", "INTERVIEW", "MAYBE", "MATHS", "POUR",
+    # --- Multi-word phrases (5) ---
+    "SWITCH", "TIGER", "TURTLE", "VOLCANO", "WHAT_IS_YOUR_NAME",
 ]
 VOCAB = ALPHABETS + DIGITS + ISL_WORDS
 NUM_CLASSES = len(VOCAB)  # should be 96 when ISL_WORDS has 60 entries

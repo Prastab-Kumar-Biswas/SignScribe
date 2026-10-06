@@ -44,6 +44,13 @@ class SlidingWindowBuffer:
         self.feature_dim = feature_dim
         self.overlap = overlap if overlap is not None else window_size // 2
 
+        if self.window_size <= 0 or self.feature_dim <= 0:
+            raise ValueError("window_size and feature_dim must be positive")
+        if not 0 <= self.overlap < self.window_size:
+            raise ValueError(
+                "overlap must be at least 0 and smaller than window_size"
+            )
+
         # Internal storage — list of 1-D arrays, flushed after emission
         self._buffer: list[np.ndarray] = []
 

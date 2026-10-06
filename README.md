@@ -58,6 +58,18 @@ pip install -r requirements.txt
 python -c "import torch; print(torch.__version__); import mediapipe; print('MediaPipe OK'); import streamlit; print('Streamlit OK')"
 ```
 
+### Check project readiness
+
+Before training or presenting the demo, run the read-only preflight check:
+
+```bash
+python -m src.preflight
+```
+
+Use `--strict` to return a non-zero exit code when the recorded dataset does
+not cover the configured vocabulary, a checkpoint is missing or incompatible,
+or a sample has an invalid shape.
+
 ---
 
 ## Google Colab Setup (LLM Fine-Tuning Only)

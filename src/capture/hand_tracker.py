@@ -98,9 +98,42 @@ class HandTracker:
         features = np.zeros(FEATURE_DIM, dtype=np.float32)
 
         if results.multi_hand_landmarks:
-            for hand_idx, hand_landmarks in enumerate(
-                results.multi_hand_landmarks[:NUM_HANDS]
-            ):
+            # MediaPipe returns detections in confidence order, which may
+            # change from frame to frame.  Feeding that order directly into
+            # the model would make the first 63 features alternate between
+            # the user's left and right hand.  Use the handedness metadata
+            # to keep a deterministic layout: Left then Right.
+            #
+            # The fallback preserves a usable result if handedness metadata
+            # is unavailable (for example, in a mocked MediaPipe result).
+            detected_hands = list(results.multi_hand_landmarks[:NUM_HANDS])
+            handedness = getattr(results, "multi_handedness", None)
+            if handedness:
+                ordered: list[object | None] = [None] * NUM_HANDS
+                unmatched: list[object] = []
+                for index, hand_landmarks in enumerate(detected_hands):
+                    hand_info = handedness[index] if index < len(handedness) else None
+                    label = (
+                        hand_info.classification[0].label.lower()
+                        if hand_info and hand_info.classification
+                        else ""
+                    )
+                    slot = 0 if label == "left" else 1 if label == "right" else None
+                    if slot is not None and ordered[slot] is None:
+                        ordered[slot] = hand_landmarks
+                    else:
+                        unmatched.append(hand_landmarks)
+
+                for slot in range(NUM_HANDS):
+                    if ordered[slot] is None and unmatched:
+                        ordered[slot] = unmatched.pop(0)
+                hands_to_encode = ordered
+            else:
+                hands_to_encode = detected_hands
+
+            for hand_idx, hand_landmarks in enumerate(hands_to_encode):
+                if hand_landmarks is None:
+                    continue
                 offset = hand_idx * NUM_LANDMARKS * NUM_COORDS  # 0 or 63
                 for lm_idx, lm in enumerate(hand_landmarks.landmark):
                     base = offset + lm_idx * NUM_COORDS

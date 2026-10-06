@@ -139,6 +139,10 @@ def init_session_state():
         "classifier_latency_buffer": [],
         "consecutive_same": 0,
         "stability_threshold": 3,
+        # Kept in session state so a single camera remains open across the
+        # one-frame Streamlit reruns used by the live view.
+        "camera": None,
+        "window_buffer": None,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -368,8 +372,22 @@ def render_manual_input(rule_mapper, llm_mapper):
             )
 
 
+def _release_camera():
+    """Release the session camera, if one is open."""
+    camera = st.session_state.camera
+    if camera is not None:
+        camera.release()
+    st.session_state.camera = None
+    st.session_state.window_buffer = None
+
+
 def render_webcam_mode(tracker, classifier, rule_mapper, llm_mapper, confidence_threshold):
-    """Live webcam mode with real-time recognition."""
+    """Render and process one webcam frame per Streamlit rerun.
+
+    Processing one frame at a time keeps Streamlit responsive: the Stop
+    Camera button is evaluated on every rerun rather than being blocked by
+    an infinite capture loop.
+    """
     from src.buffering.sliding_window import SlidingWindowBuffer
 
     st.markdown("---")
@@ -386,6 +404,9 @@ def render_webcam_mode(tracker, classifier, rule_mapper, llm_mapper, confidence_
             st.session_state.running = not st.session_state.running
             if not st.session_state.running:
                 st.session_state.gloss_history = []
+                st.session_state.last_prediction = ""
+                st.session_state.consecutive_same = 0
+                _release_camera()
 
     with col_clear:
         if st.button("Clear History"):
@@ -412,132 +433,104 @@ def render_webcam_mode(tracker, classifier, rule_mapper, llm_mapper, confidence_
             )
             return
 
-        video_placeholder = st.empty()
-        status_placeholder = st.empty()
+        if st.session_state.window_buffer is None:
+            # 50% overlap balances responsiveness with distinct temporal
+            # evidence; every classification uses exactly 30 frames.
+            st.session_state.window_buffer = SlidingWindowBuffer(
+                overlap=WINDOW_SIZE // 2
+            )
 
-        buffer = SlidingWindowBuffer(overlap=WINDOW_SIZE)  # no overlap for recording-style
+        if st.session_state.camera is None:
+            cap = cv2.VideoCapture(0)
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            st.session_state.camera = cap
 
-        cap = cv2.VideoCapture(0)
+        cap = st.session_state.camera
         if not cap.isOpened():
             st.error("Cannot open webcam. Is it connected?")
             st.session_state.running = False
+            _release_camera()
             return
 
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-
         frame_interval = 1.0 / TARGET_FPS
+        t_frame_start = time.perf_counter()
+        ret, frame_bgr = cap.read()
+        if not ret:
+            st.warning("Failed to read from webcam.")
+            st.session_state.running = False
+            _release_camera()
+            return
 
-        try:
-            while st.session_state.running:
-                t_frame_start = time.perf_counter()
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
-                ret, frame_bgr = cap.read()
-                if not ret:
-                    st.warning("Failed to read from webcam.")
-                    break
+        t_mp_start = time.perf_counter()
+        features, results = tracker.extract_landmarks(frame_rgb)
+        mp_ms = (time.perf_counter() - t_mp_start) * 1000
 
-                frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        st.session_state.latency_buffer.append(mp_ms)
+        if len(st.session_state.latency_buffer) > 30:
+            st.session_state.latency_buffer.pop(0)
+        st.session_state.avg_mediapipe_ms = np.mean(st.session_state.latency_buffer)
 
-                # MediaPipe
-                t_mp_start = time.perf_counter()
-                features, results = tracker.extract_landmarks(frame_rgb)
-                t_mp_end = time.perf_counter()
-                mp_ms = (t_mp_end - t_mp_start) * 1000
+        frame_bgr = tracker.draw_landmarks(frame_bgr, results)
+        num_hands = len(results.multi_hand_landmarks) if results.multi_hand_landmarks else 0
+        window = st.session_state.window_buffer.add_frame(features)
 
-                # Update latency tracking
-                st.session_state.latency_buffer.append(mp_ms)
-                if len(st.session_state.latency_buffer) > 30:
-                    st.session_state.latency_buffer.pop(0)
-                st.session_state.avg_mediapipe_ms = np.mean(
-                    st.session_state.latency_buffer
-                )
+        if window is not None and num_hands > 0:
+            label, confidence, clf_ms = classifier.predict(window)
+            st.session_state.classifier_latency_buffer.append(clf_ms)
+            if len(st.session_state.classifier_latency_buffer) > 30:
+                st.session_state.classifier_latency_buffer.pop(0)
+            st.session_state.avg_classifier_ms = np.mean(
+                st.session_state.classifier_latency_buffer
+            )
 
-                # Draw landmarks
-                frame_bgr = tracker.draw_landmarks(frame_bgr, results)
+            if confidence >= confidence_threshold:
+                if label == st.session_state.last_prediction:
+                    st.session_state.consecutive_same += 1
+                else:
+                    st.session_state.consecutive_same = 1
+                    st.session_state.last_prediction = label
 
-                num_hands = (
-                    len(results.multi_hand_landmarks)
-                    if results.multi_hand_landmarks
-                    else 0
-                )
+                if st.session_state.consecutive_same >= st.session_state.stability_threshold:
+                    if (not st.session_state.gloss_history or
+                            st.session_state.gloss_history[-1] != label):
+                        st.session_state.gloss_history.append(label)
+                        st.session_state.path_a_output = rule_mapper.map_sequence(
+                            st.session_state.gloss_history
+                        )
+                        if llm_mapper:
+                            st.session_state.path_b_output = llm_mapper.map_sequence(
+                                st.session_state.gloss_history
+                            )
+                    st.session_state.consecutive_same = 0
 
-                # Add to sliding window buffer
-                window = buffer.add_frame(features)
+            st.session_state.last_confidence = confidence
 
-                if window is not None and num_hands > 0:
-                    # Classify
-                    t_clf_start = time.perf_counter()
-                    label, confidence, clf_ms = classifier.predict(window)
-                    t_clf_end = time.perf_counter()
+        cv2.putText(
+            frame_bgr, f"MP: {mp_ms:.0f}ms | Hands: {num_hands}",
+            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+            (0, 255, 0) if mp_ms <= BUDGET_MEDIAPIPE_MS else (0, 0, 255), 2,
+        )
+        if st.session_state.last_prediction:
+            cv2.putText(
+                frame_bgr,
+                f"Pred: {st.session_state.last_prediction} "
+                f"({st.session_state.last_confidence:.0%})",
+                (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2,
+            )
 
-                    st.session_state.classifier_latency_buffer.append(clf_ms)
-                    if len(st.session_state.classifier_latency_buffer) > 30:
-                        st.session_state.classifier_latency_buffer.pop(0)
-                    st.session_state.avg_classifier_ms = np.mean(
-                        st.session_state.classifier_latency_buffer
-                    )
+        st.image(
+            cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB),
+            channels="RGB", use_column_width=True,
+        )
+        st.session_state.frame_count += 1
 
-                    if confidence >= confidence_threshold:
-                        # Stability check
-                        if label == st.session_state.last_prediction:
-                            st.session_state.consecutive_same += 1
-                        else:
-                            st.session_state.consecutive_same = 1
-                            st.session_state.last_prediction = label
-
-                        if st.session_state.consecutive_same >= st.session_state.stability_threshold:
-                            # Accept this prediction
-                            if (not st.session_state.gloss_history or
-                                    st.session_state.gloss_history[-1] != label):
-                                st.session_state.gloss_history.append(label)
-
-                                # Update translations
-                                st.session_state.path_a_output = rule_mapper.map_sequence(
-                                    st.session_state.gloss_history
-                                )
-                                if llm_mapper:
-                                    st.session_state.path_b_output = llm_mapper.map_sequence(
-                                        st.session_state.gloss_history
-                                    )
-
-                            st.session_state.consecutive_same = 0
-
-                    st.session_state.last_confidence = confidence
-
-                # HUD overlay on frame
-                cv2.putText(
-                    frame_bgr,
-                    f"MP: {mp_ms:.0f}ms | Hands: {num_hands}",
-                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                    (0, 255, 0) if mp_ms <= BUDGET_MEDIAPIPE_MS else (0, 0, 255),
-                    2,
-                )
-                if st.session_state.last_prediction:
-                    cv2.putText(
-                        frame_bgr,
-                        f"Pred: {st.session_state.last_prediction} "
-                        f"({st.session_state.last_confidence:.0%})",
-                        (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                        (255, 255, 0), 2,
-                    )
-
-                # Display frame
-                video_placeholder.image(
-                    cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB),
-                    channels="RGB",
-                    use_column_width=True,
-                )
-
-                # Throttle
-                elapsed = time.perf_counter() - t_frame_start
-                if elapsed < frame_interval:
-                    time.sleep(frame_interval - elapsed)
-
-                st.session_state.frame_count += 1
-
-        finally:
-            cap.release()
+        elapsed = time.perf_counter() - t_frame_start
+        if elapsed < frame_interval:
+            time.sleep(frame_interval - elapsed)
+        st.rerun()
 
 
 # ── Evaluation panel ────────────────────────────────────────────────
