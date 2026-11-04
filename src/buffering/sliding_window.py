@@ -4,15 +4,12 @@ M3 — Sliding-window buffer for temporal gesture sequences.
 Runs LOCALLY.  Accumulates per-frame 126-dim landmark vectors into
 fixed-size windows of shape (WINDOW_SIZE, FEATURE_DIM) = (30, 126).
 
-The buffer emits a "ready" window once it has accumulated WINDOW_SIZE
-frames.  It uses a sliding approach: after emitting, it keeps the last
-`overlap` frames to provide temporal continuity between consecutive
-classifications.
-
-This module is used by:
-  - The data recorder (for saving labeled training sequences)
-  - The live demo (for feeding the classifier in real time)
+Includes hand-presence gating:
+- Automatically resets when no hands are detected for several frames (idle detection).
+- Rejects windows that have insufficient hand presence (prevents hallucinating signs on empty frames).
 """
+
+from __future__ import annotations
 
 import numpy as np
 
@@ -32,6 +29,12 @@ class SlidingWindowBuffer:
         How many frames to keep after emitting a window.
         Higher overlap = smoother transitions but more frequent
         classifications.  Default is window_size // 2 (50% overlap).
+    min_active_ratio : float
+        Minimum fraction of frames in a window that must contain active hand
+        landmarks (default: 0.6). Windows with fewer active frames are rejected.
+    max_idle_frames : int
+        Number of consecutive frames without hands before the buffer resets
+        to prevent contamination between separate gestures (default: 6).
     """
 
     def __init__(
@@ -39,10 +42,14 @@ class SlidingWindowBuffer:
         window_size: int = WINDOW_SIZE,
         feature_dim: int = FEATURE_DIM,
         overlap: int | None = None,
+        min_active_ratio: float = 0.6,
+        max_idle_frames: int = 6,
     ):
         self.window_size = window_size
         self.feature_dim = feature_dim
         self.overlap = overlap if overlap is not None else window_size // 2
+        self.min_active_ratio = min_active_ratio
+        self.max_idle_frames = max_idle_frames
 
         if self.window_size <= 0 or self.feature_dim <= 0:
             raise ValueError("window_size and feature_dim must be positive")
@@ -51,8 +58,9 @@ class SlidingWindowBuffer:
                 "overlap must be at least 0 and smaller than window_size"
             )
 
-        # Internal storage — list of 1-D arrays, flushed after emission
+        # Internal storage
         self._buffer: list[np.ndarray] = []
+        self._idle_count: int = 0
 
     @property
     def current_length(self) -> int:
@@ -64,53 +72,65 @@ class SlidingWindowBuffer:
         """True when the buffer has enough frames to emit a window."""
         return len(self._buffer) >= self.window_size
 
-    def add_frame(self, features: np.ndarray) -> np.ndarray | None:
+    def add_frame(
+        self, features: np.ndarray, has_hands: bool | None = None
+    ) -> np.ndarray | None:
         """Add a single frame's features and return a window if ready.
 
         Parameters
         ----------
         features : np.ndarray
             Shape (FEATURE_DIM,) = (126,).
+        has_hands : bool or None
+            Whether hands were detected in this frame. If None, detected by
+            checking if any feature is non-zero.
 
         Returns
         -------
         np.ndarray or None
-            If the buffer has reached `window_size` frames, returns the
-            window as shape (window_size, feature_dim) and slides by
-            keeping the last `overlap` frames.  Otherwise returns None.
+            If the buffer has reached `window_size` frames and passes the
+            active-hand ratio check, returns the window as shape (window_size, feature_dim)
+            and slides by keeping the last `overlap` frames. Otherwise returns None.
         """
         assert features.shape == (self.feature_dim,), (
             f"Expected feature vector of shape ({self.feature_dim},), "
             f"got {features.shape}"
         )
+
+        if has_hands is None:
+            has_hands = bool(np.any(features != 0))
+
+        if not has_hands:
+            self._idle_count += 1
+            if self._idle_count >= self.max_idle_frames:
+                # Reset buffer on prolonged silence so the next gesture starts fresh
+                self.reset()
+            return None
+
+        # Hands are present; reset idle counter and append frame
+        self._idle_count = 0
         self._buffer.append(features.copy())
 
         if self.is_ready:
-            # Stack into (window_size, feature_dim)
-            window = np.stack(self._buffer[: self.window_size], axis=0)
+            candidate = np.stack(self._buffer[: self.window_size], axis=0)
 
-            # Slide: keep the last `overlap` frames for continuity
+            # Slide buffer forward
             self._buffer = self._buffer[self.window_size - self.overlap :]
 
-            return window
+            # Hand-presence quality check: count frames with non-zero features
+            active_frames = np.sum(np.any(candidate != 0, axis=1))
+            if active_frames / self.window_size >= self.min_active_ratio:
+                return candidate
 
         return None
 
     def reset(self):
         """Clear the buffer entirely."""
         self._buffer.clear()
+        self._idle_count = 0
 
     def get_partial_window(self) -> np.ndarray:
-        """Return whatever frames are buffered, zero-padded to window_size.
-
-        Useful for visualising the current buffer state or for a
-        "best-effort" classification when the user stops mid-gesture.
-
-        Returns
-        -------
-        np.ndarray
-            Shape (window_size, feature_dim), zero-padded at the end.
-        """
+        """Return whatever frames are buffered, zero-padded to window_size."""
         window = np.zeros(
             (self.window_size, self.feature_dim), dtype=np.float32
         )

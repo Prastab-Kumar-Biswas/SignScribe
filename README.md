@@ -1,178 +1,155 @@
 # SignScribe
 
-**Real-time Indian Sign Language → Fluent English Text**, comparing rule-based grammar mapping (Path A) against a fine-tuned LLM (Path B).
+**Real-time Indian Sign Language (ISL) to Text Generator**.
 
-> Final-year B.Tech IT project (PROJ-IT781).
-
----
-
-## Quick Summary
-
-| Stage | What | Where | Module |
-|-------|------|-------|--------|
-| M1 | Webcam video capture | **Local** | `src/capture/` |
-| M2 | MediaPipe hand landmark extraction | **Local** | `src/capture/` |
-| M3 | Sliding-window buffer + dataset recording tool | **Local** | `src/buffering/` |
-| M4 | BiLSTM gesture classifier (train + infer) | **Local** (CPU) | `src/classifier/` |
-| M5a | Rule-based grammar mapper (Path A) | **Local** | `src/grammar_mapper/` |
-| M5b | T5-small LoRA fine-tuning (Path B) | **Google Colab** (T4 GPU) | `colab/llm_finetune.ipynb` |
-| M5b | LLM inference (using fine-tuned weights) | **Local** (CPU) | `src/grammar_mapper/` or `src/demo/` |
-| M6 | Evaluation (Accuracy, BLEU-4, Hallucination Rate) | **Local** | `src/evaluation/` |
-| M7 | Streamlit demo app | **Local** | `src/demo/` |
+Lightweight, high-performance sign language recognition pipeline designed to run smoothly on standard CPU laptops with zero external GPU requirements.
 
 ---
 
-## Hardware Requirements
+## 🌟 Key Features
 
-| Machine | Specs | Role |
-|---------|-------|------|
-| Local laptop | Intel Core i7, 16 GB RAM, **no discrete GPU** | Everything except LLM fine-tuning |
-| Google Colab (free tier) | T4 GPU, ~16 GB VRAM | LLM fine-tuning only |
-
-> **Important**: The local setup uses **CPU-only PyTorch**. No CUDA required.
+- **Real-Time Camera Pipeline**: Captures mirrored webcam frames and extracts 21 3D hand landmarks per hand at up to 60 FPS using MediaPipe Hands Lite.
+- **BiLSTM Gesture Classifier**: Evaluates 30-frame temporal windows across 97 sign classes with ~15 ms CPU inference latency.
+- **Physical & Geometric Disambiguation**:
+  - **`F` vs `X`**: Disambiguated by extended finger count (cross 2 fingers per hand for `F` vs 1 finger per hand for `X`).
+  - **`K` vs `E`**: Disambiguated by vertical wrist displacement ($|dy| \ge 0.35$ for reaching hand in `K`).
+  - **`J` vs `Q`**: Disambiguated by wrist elevation separation ($|dy| \ge 0.28$ for drawing down into palm in `J`).
+  - **`L` vs `1`**: Disambiguated by physical thumb spread ($d \ge 0.18$ for wide $90^\circ$ thumb in `L`).
+  - **`I`**: Cleanly evaluated as a single-hand gesture with relaxed thumb spread ($d \ge 0.16$).
+- **Fingerspelling Mode (Masked Logits)**: Automatically eliminates spurious whole-word hallucinations during letter typing by masking logits to the 36 alphanumeric classes (`0–9`, `A–Z`).
+- **Deterministic Text Generator**: Assembles fingerspelled letters into cohesive English words and sentences with automated space handling and punctuation—no heavy LLMs or rule mappers required.
+- **Dual Interfaces**: Includes both an interactive Streamlit Web UI and a zero-latency native OpenCV desktop application.
 
 ---
 
-## Local Setup
+## 🏗️ Architecture Overview
+
+```
+Webcam (Mirrored) ──► MediaPipe Hands (21 Landmarks × 2 hands)
+                            │
+                            ▼
+              Gated Sliding Window Buffer (30 Frames)
+              [Active Hand Presence Gating & Idle Reset]
+                            │
+                            ▼
+             BiLSTM Classifier (Spatial & Geometric Arbitration)
+              [Fingerspelling Masking & Stability Thresholds]
+                            │
+                            ▼
+                   SignTextGenerator
+              [Fingerspelling Assembly & Sentence Formatting]
+                            │
+                            ▼
+                   English Text Output
+```
+
+### Supported Vocabulary (97 Signs)
+- **Two-Hand Alphabets (20)**: `A`, `B`, `D`, `E`, `F`, `G`, `H`, `J`, `K`, `M`, `N`, `P`, `Q`, `R`, `S`, `T`, `W`, `X`, `Y`, `Z`
+- **One-Hand Alphabets (6)**: `C`, `I`, `L`, `O`, `U`, `V`
+- **Digits (10)**: `0` to `9`
+- **ISL Words (61)**: Greetings, food items, verbs, family relations, animals, and common expressions (e.g., `HELLO`, `GOOD_MORNING`, `THANK_YOU`, `WHAT_IS_YOUR_NAME`, `WATER`, `DRINK`, etc.)
+
+---
+
+## 🚀 Quickstart
+
+### 1. Environment Setup
 
 ```bash
-# 1. Clone
-git clone https://github.com/<your-username>/signscribe.git
+# Clone the repository
+git clone https://github.com/Prastab-Kumar-Biswas/signscribe.git
 cd signscribe
 
-# 2. Create a virtual environment (Python 3.12)
+# Create and activate virtual environment (Python 3.10 - 3.12)
 python -m venv venv
-venv\Scripts\activate        # Windows
-# source venv/bin/activate   # macOS/Linux
+.\venv\Scripts\Activate.ps1       # Windows PowerShell
+# source venv/bin/activate       # macOS / Linux
 
-# 3. Install CPU-only PyTorch first (special index URL)
+# Install CPU PyTorch
 pip install torch==2.4.1+cpu --index-url https://download.pytorch.org/whl/cpu
 
-# 4. Install remaining dependencies
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-### Verify installation
+### 2. Verify Readiness
 
-```bash
-python -c "import torch; print(torch.__version__); import mediapipe; print('MediaPipe OK'); import streamlit; print('Streamlit OK')"
-```
-
-### Check project readiness
-
-Before training or presenting the demo, run the read-only preflight check:
-
+Run preflight checks to confirm environment and model weights:
 ```bash
 python -m src.preflight
 ```
 
-Use `--strict` to return a non-zero exit code when the recorded dataset does
-not cover the configured vocabulary, a checkpoint is missing or incompatible,
-or a sample has an invalid shape.
+---
+
+## 💻 Running the Application
+
+### Option A: Ultra-Fast Native Desktop Window (Recommended)
+Runs directly via native OpenCV with 30–60 FPS responsiveness:
+```bash
+python run_live.py
+```
+- **HUD**: Real-time FPS, hands detected, predicted sign badge, and live generated text.
+- **Keyboard Controls**:
+  - `[Space]` — Complete word / add space
+  - `[Backspace]` — Delete last letter or word
+  - `[c]` — Clear all generated text
+  - `[m]` — Toggle mode (`Letters & Numbers Only` vs `All 97 Signs`)
+  - `[q]` — Quit
+
+### Option B: Streamlit Web Application
+Runs the browser interface with side-by-side video feed, live text cards, and sensitivity sliders:
+```bash
+streamlit run src/demo/app.py
+```
+- **Mode Selection**: Switch between **Letters & Numbers (Fingerspelling)** and **All 97 Signs** directly from the sidebar.
+- **Controls**: Real-time buttons for Space, Backspace, Copy, and Reset.
+- **ISL Guide**: Interactive cheat-sheet with signing tips.
 
 ---
 
-## Google Colab Setup (LLM Fine-Tuning Only)
+## 🤟 ISL Signing Guide & Tips
 
-1. Open `colab/llm_finetune.ipynb` in Google Colab.
-2. Select **Runtime → Change runtime type → T4 GPU**.
-3. Follow the notebook instructions to upload your gloss→sentence dataset.
-4. After fine-tuning, download the LoRA adapter weights.
-5. Place them in `models/llm_finetuned/` on your local machine.
+- **`I` (One Hand)**: Hold up **one hand** with the index finger pointing up and thumb relaxed. (Do not touch with the other hand—in this dataset, `I` is a single-handed sign).
+- **`L` vs `1` (One Hand)**:
+  - **`L`**: Point index finger up and extend thumb wide horizontally at $90^\circ$.
+  - **`1`**: Point index finger up and fold thumb tight across the fist.
+- **`F` vs `X` (Two Hands)**:
+  - **`F`**: Cross with **2 extended fingers** (index + middle) on both hands.
+  - **`X`**: Cross with **only 1 extended finger** (index finger) on both hands.
+- **`K` vs `E` (Two Hands)**:
+  - **`K`**: Keep the reaching hand held **high above** the base hand.
+  - **`E`**: Keep both hands at the **same horizontal level**.
+- **`J` vs `Q` (Two Hands)**:
+  - **`J`**: Hold the base palm lower down and draw the 'J' from above.
+  - **`Q`**: Keep both hands at the same horizontal level.
 
 ---
 
-## Project Structure
+## 📂 Project Structure
 
 ```
 signscribe/
-├── README.md
-├── requirements.txt
-├── .gitignore
+├── run_live.py           # Native high-speed OpenCV desktop runner (30-60 FPS)
+├── requirements.txt      # Clean, minimal CPU-only dependencies
+├── models/
+│   └── classifier.pt     # Trained BiLSTM classifier checkpoint (97 classes)
 ├── data/
-│   ├── raw/              # Recorded gesture sequences
-│   └── processed/        # Windowed & augmented tensors
+│   └── raw/              # Recorded gesture landmark samples (.npy)
 ├── src/
-│   ├── config.py         # Central configuration (all constants)
-│   ├── capture/          # M1, M2 — Webcam + MediaPipe
-│   ├── buffering/        # M3 — Sliding window + recording tool
-│   ├── classifier/       # M4 — BiLSTM model, training, inference
-│   ├── grammar_mapper/   # M5a — Rule-based path
-│   ├── evaluation/       # M6 — Metrics
-│   └── demo/             # M7 — Streamlit app
-├── colab/
-│   └── llm_finetune.ipynb  # M5b — T5-small LoRA fine-tuning
-└── models/
-    ├── classifier.pt       # Trained classifier weights
-    └── llm_finetuned/      # LoRA adapter weights from Colab
+│   ├── config.py         # Global constants and vocabulary definitions
+│   ├── preflight.py      # Preflight sanity checks
+│   ├── capture/          # Webcam capture & MediaPipe hand tracker
+│   ├── buffering/        # Hand-gated sliding window buffer
+│   ├── classifier/       # BiLSTM model architecture, dataset, inference
+│   ├── text_generator/   # Fast fingerspelling assembly & text formatter
+│   └── demo/             # Streamlit web demo application
+└── scripts/
+    ├── convert_csv_landmarks.py   # Landmark data converter
+    └── convert_video_dataset.py   # Video to landmarks converter
 ```
 
 ---
 
-## Technical Specifications
+## 📜 License
 
-| Parameter | Value |
-|-----------|-------|
-| Feature vector | 21 landmarks × 3 coords × 2 hands = **126 dims** |
-| Temporal window | **30 frames** @ 25 fps = 1.2 s |
-| Classifier | 2-layer bidirectional LSTM, hidden=128, **~680K params** |
-| Classes | 26 letters + 10 digits + 60 ISL words = **96** |
-| Latency target | **≤ 40 ms/frame** (25 fps) |
-| LLM | **T5-small** (~60M params) fine-tuned with **LoRA/PEFT** |
-
-### Evaluation Metrics
-
-- **Accuracy, Precision, Recall, F1** — via scikit-learn
-- **BLEU-4** — via sacrebleu (LLM fluency vs. reference sentences)
-- **Hallucination Rate** — custom metric (unsupported words / total words)
-
----
-
-## Build Phases
-
-| Phase | Modules | Status |
-|-------|---------|--------|
-| 0 — Scaffold | Repo structure, configs | Done |
-| 1 — Webcam + MediaPipe | M1, M2 | Done |
-| 2 — Buffer + Recorder | M3 | Done |
-| 3 — Classifier | M4 | Done |
-| 4 — Rule-based Mapper | M5a | Done |
-| 5 — LLM Fine-tuning | M5b (Colab) | Done |
-| 6 — Evaluation | M6 | Done |
-| 7 — Demo App | M7 | Done |
-
----
-
-## Running the Demo
-
-```bash
-# Make sure venv is activated, classifier is trained, and you're in the project root
-streamlit run src/demo/app.py
-```
-
-The demo has three tabs:
-- **Live Webcam** — real-time gesture recognition with both translation paths
-- **Manual Input** — type gloss tokens to test translations without webcam
-- **Evaluation** — side-by-side comparison table with BLEU-4 and hallucination rate
-
----
-
-## Running the Data Recorder
-
-```bash
-python -m src.buffering.data_recorder
-```
-
-## Training the Classifier (locally)
-
-```bash
-python -m src.classifier.train --epochs 50 --batch-size 32
-```
-
-Or use the Colab notebook (`colab/llm_finetune.ipynb`) for faster GPU training.
-
----
-
-## License
-
-This project is developed for academic purposes as part of B.Tech IT final-year coursework.
+MIT License. Designed and developed for assistive technology and accessible real-time communication.

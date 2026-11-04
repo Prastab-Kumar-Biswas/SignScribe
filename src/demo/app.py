@@ -1,18 +1,15 @@
 """
-M7 -- Streamlit demo application for SignScribe.
+SignScribe — Real-time Sign Language to Text Generator.
 
-Runs LOCALLY.  Ties the full pipeline together:
-    Webcam -> MediaPipe -> Sliding Window -> BiLSTM Classifier
-    -> Path A (Rule-based) + Path B (LLM) side by side
+Runs LOCALLY (CPU). Ties the lightweight pipeline together:
+    Webcam (mirrored) -> MediaPipe Hands -> Gated Sliding Window -> BiLSTM Classifier
+    -> SignTextGenerator -> Live English Text Output
 
 Usage:
     streamlit run src/demo/app.py
-
-Requirements:
-    - Trained classifier at models/classifier.pt
-    - (Optional) Fine-tuned LLM at models/llm_finetuned/
-    - Webcam connected
 """
+
+from __future__ import annotations
 
 import sys
 import time
@@ -22,7 +19,7 @@ import cv2
 import numpy as np
 import streamlit as st
 
-# Ensure project root is on path
+# Ensure project root is on sys.path
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
@@ -31,16 +28,18 @@ from src.config import (
     FEATURE_DIM,
     WINDOW_SIZE,
     TARGET_FPS,
-    BUDGET_MEDIAPIPE_MS,
-    BUDGET_CLASSIFIER_MS,
-    BUDGET_TOTAL_MS,
+    VOCAB,
+    ALPHABETS,
+    DIGITS,
+    ISL_WORDS,
 )
+from src.text_generator.generator import SignTextGenerator
 
 
 # ── Page config ─────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="SignScribe",
-    page_icon="",
+    page_title="SignScribe — Sign Language to Text",
+    page_icon="🤟",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -49,71 +48,62 @@ st.set_page_config(
 st.markdown("""
 <style>
     .main-title {
-        font-size: 2.5rem;
+        font-size: 2.3rem;
         font-weight: 700;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
-        margin-bottom: 0;
+        margin-bottom: 0px;
     }
     .subtitle {
-        font-size: 1.1rem;
-        color: #888;
-        margin-top: -10px;
+        font-size: 1.05rem;
+        color: #94a3b8;
+        margin-top: -6px;
         margin-bottom: 20px;
     }
-    .path-card {
-        background: linear-gradient(145deg, #1a1a2e 0%, #16213e 100%);
+    .text-output-card {
+        background-color: #0f172a;
+        border: 2px solid #334155;
         border-radius: 12px;
         padding: 20px;
-        border: 1px solid #333;
+        min-height: 180px;
+        font-size: 1.5rem;
+        font-weight: 500;
+        color: #f8fafc;
+        line-height: 1.6;
+        word-wrap: break-word;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
     }
-    .path-a-header {
-        color: #4ecdc4;
+    .placeholder-text {
+        color: #64748b;
+        font-style: italic;
         font-size: 1.2rem;
-        font-weight: 600;
     }
-    .path-b-header {
-        color: #ff6b6b;
-        font-size: 1.2rem;
-        font-weight: 600;
-    }
-    .metric-label {
-        color: #aaa;
-        font-size: 0.85rem;
-    }
-    .gloss-token {
+    .token-badge {
         display: inline-block;
-        background: #2d2d44;
-        color: #e0e0ff;
+        background: #1e293b;
+        color: #38bdf8;
+        border: 1px solid #38bdf8;
         padding: 4px 10px;
         border-radius: 6px;
-        margin: 2px;
+        margin: 3px;
         font-family: monospace;
         font-size: 0.95rem;
+        font-weight: 600;
     }
-    .sentence-output {
-        font-size: 1.3rem;
-        font-weight: 500;
-        padding: 10px;
-        border-radius: 8px;
-        min-height: 50px;
+    .status-badge-ok {
+        background: #064e3b;
+        color: #34d399;
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-weight: bold;
     }
-    .sentence-a {
-        background: rgba(78, 205, 196, 0.1);
-        border-left: 4px solid #4ecdc4;
-        color: #4ecdc4;
-    }
-    .sentence-b {
-        background: rgba(255, 107, 107, 0.1);
-        border-left: 4px solid #ff6b6b;
-        color: #ff6b6b;
-    }
-    .status-ok { color: #4ecdc4; }
-    .status-warn { color: #ffd93d; }
-    .status-err { color: #ff6b6b; }
-    div[data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #0f0f1a 0%, #1a1a2e 100%);
+    .status-badge-warn {
+        background: #78350f;
+        color: #fbbf24;
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-weight: bold;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -125,519 +115,383 @@ def init_session_state():
     """Initialise all session state variables."""
     defaults = {
         "running": False,
-        "gloss_history": [],
-        "path_a_output": "",
-        "path_b_output": "",
-        "classifier_loaded": False,
-        "llm_loaded": False,
-        "frame_count": 0,
-        "last_prediction": "",
-        "last_confidence": 0.0,
-        "avg_mediapipe_ms": 0.0,
-        "avg_classifier_ms": 0.0,
-        "latency_buffer": [],
-        "classifier_latency_buffer": [],
-        "consecutive_same": 0,
-        "stability_threshold": 3,
-        # Kept in session state so a single camera remains open across the
-        # one-frame Streamlit reruns used by the live view.
+        "text_generator": None,
         "camera": None,
         "window_buffer": None,
+        "frame_count": 0,
+        "last_pred_label": "IDLE",
+        "last_pred_conf": 0.0,
+        "consecutive_same": 0,
+        "last_committed_token": "",
+        "avg_fps": 0.0,
+        "recent_latencies": [],
     }
     for key, val in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = val
 
+    if st.session_state.text_generator is None:
+        st.session_state.text_generator = SignTextGenerator()
+
 
 init_session_state()
 
 
-# ── Lazy-load heavy components ──────────────────────────────────────
+# ── Lazy-load cached core models ────────────────────────────────────
 
 @st.cache_resource
 def load_hand_tracker():
     """Load MediaPipe hand tracker (cached across reruns)."""
     from src.capture.hand_tracker import HandTracker
-    return HandTracker()
+    return HandTracker(detection_confidence=0.5, tracking_confidence=0.5)
 
 
 @st.cache_resource
 def load_classifier():
-    """Load the trained gesture classifier."""
+    """Load the trained BiLSTM gesture classifier."""
     try:
         from src.classifier.inference import GesturePredictor
-        predictor = GesturePredictor()
-        return predictor
-    except FileNotFoundError as e:
-        st.sidebar.error(f"Classifier not found: {e}")
+        return GesturePredictor()
+    except FileNotFoundError:
         return None
-
-
-@st.cache_resource
-def load_rule_mapper():
-    """Load the rule-based grammar mapper."""
-    from src.grammar_mapper.rule_mapper import RuleBasedMapper
-    return RuleBasedMapper()
-
-
-@st.cache_resource
-def load_llm_mapper():
-    """Load the LLM-based mapper (may take a moment on first load)."""
-    try:
-        from src.grammar_mapper.llm_mapper import LLMMapper
-        return LLMMapper()
     except Exception as e:
-        st.sidebar.warning(f"LLM mapper not available: {e}")
+        st.sidebar.error(f"Error loading classifier: {e}")
         return None
+
+
+# ── Helper for camera cleanup ───────────────────────────────────────
+
+def _release_camera():
+    """Release webcam resources safely."""
+    if st.session_state.camera is not None:
+        try:
+            st.session_state.camera.release()
+        except Exception:
+            pass
+    st.session_state.camera = None
+    st.session_state.window_buffer = None
 
 
 # ── Sidebar ─────────────────────────────────────────────────────────
 
 def render_sidebar():
-    """Render the sidebar with controls and status."""
-    st.sidebar.markdown("## SignScribe Controls")
-
-    # Pipeline status
-    st.sidebar.markdown("### Pipeline Status")
-
-    tracker = load_hand_tracker()
-    st.sidebar.markdown("- MediaPipe: **Ready**")
+    """Render the simplified sidebar controls."""
+    st.sidebar.markdown("## ⚙️ Settings & Status")
 
     classifier = load_classifier()
     if classifier:
         st.sidebar.markdown(
-            f"- Classifier: **Loaded** ({len(classifier.label_names)} classes)"
-        )
-        st.session_state.classifier_loaded = True
-    else:
-        st.sidebar.markdown("- Classifier: **Not trained**")
-        st.sidebar.info(
-            "Train the classifier first:\n"
-            "```\npython -m src.classifier.train\n```"
-        )
-
-    rule_mapper = load_rule_mapper()
-    st.sidebar.markdown("- Path A (Rules): **Ready**")
-
-    llm_mapper = load_llm_mapper()
-    if llm_mapper and llm_mapper.is_finetuned:
-        st.sidebar.markdown("- Path B (LLM): **Fine-tuned**")
-        st.session_state.llm_loaded = True
-    elif llm_mapper:
-        st.sidebar.markdown("- Path B (LLM): **Base model** (not fine-tuned)")
-        st.session_state.llm_loaded = True
-    else:
-        st.sidebar.markdown("- Path B (LLM): **Not available**")
-
-    # Settings
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### Settings")
-
-    confidence_threshold = st.sidebar.slider(
-        "Confidence threshold",
-        min_value=0.1, max_value=0.99, value=0.5, step=0.05,
-        help="Minimum classifier confidence to accept a prediction"
-    )
-
-    stability_threshold = st.sidebar.slider(
-        "Stability (frames)",
-        min_value=1, max_value=10, value=3, step=1,
-        help="How many consecutive identical predictions needed to accept"
-    )
-    st.session_state.stability_threshold = stability_threshold
-
-    # Latency stats
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### Latency")
-    if st.session_state.avg_mediapipe_ms > 0:
-        mp_color = "status-ok" if st.session_state.avg_mediapipe_ms <= BUDGET_MEDIAPIPE_MS else "status-warn"
-        st.sidebar.markdown(
-            f'<span class="{mp_color}">MediaPipe: '
-            f'{st.session_state.avg_mediapipe_ms:.1f} ms</span>',
+            f"**Classifier**: <span class='status-badge-ok'>Ready</span> ({len(classifier.label_names)} signs)",
             unsafe_allow_html=True,
         )
-    if st.session_state.avg_classifier_ms > 0:
-        clf_color = "status-ok" if st.session_state.avg_classifier_ms <= BUDGET_CLASSIFIER_MS else "status-warn"
+    else:
         st.sidebar.markdown(
-            f'<span class="{clf_color}">Classifier: '
-            f'{st.session_state.avg_classifier_ms:.1f} ms</span>',
+            "**Classifier**: <span class='status-badge-warn'>Not Found</span>",
             unsafe_allow_html=True,
         )
+        st.sidebar.warning("Please train the model: `python -m src.classifier.train`")
 
     st.sidebar.markdown("---")
-    st.sidebar.markdown(
-        "*SignScribe - Final Year Project (PROJ-IT781)*"
+    st.sidebar.markdown("### 🎯 Recognition Mode")
+
+    rec_mode = st.sidebar.radio(
+        "Mode Selection",
+        options=[
+            "Letters & Numbers (Fingerspelling)",
+            "All 97 Signs (Letters, Numbers & Words)",
+        ],
+        index=0,
+        help=(
+            "Letters & Numbers mode masks out whole words to eliminate "
+            "random word hallucinations while fingerspelling."
+        ),
+    )
+    alphanumeric_only = bool(rec_mode == "Letters & Numbers (Fingerspelling)")
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### Detection Sensitivity")
+
+    conf_threshold = st.sidebar.slider(
+        "Confidence Threshold",
+        min_value=0.30,
+        max_value=0.95,
+        value=0.60,
+        step=0.05,
+        help="Minimum classifier probability to accept a sign.",
     )
 
-    return tracker, classifier, rule_mapper, llm_mapper, confidence_threshold
+    stability_frames = st.sidebar.slider(
+        "Stability (Consecutive Frames)",
+        min_value=1,
+        max_value=6,
+        value=2,
+        step=1,
+        help="Number of consecutive identical predictions required to confirm a sign.",
+    )
+
+    cam_index = st.sidebar.number_input(
+        "Webcam Index", min_value=0, max_value=4, value=0, step=1,
+        help="0 is typically the default built-in laptop webcam."
+    )
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 📖 ISL Vocabulary Guide")
+    with st.sidebar.expander("View Supported Signs & Tips"):
+        st.markdown(
+            "**Two-Hand Alphabets (20)**:\n"
+            f"{', '.join(sorted('ABDEFGHKMNPQRSTWXYZ'))}\n\n"
+            "*⚠️ Requires BOTH hands in ISL!*\n"
+            "- **F vs X**: `F` crosses 2 fingers per hand; `X` crosses 1 finger per hand.\n"
+            "- **E vs K**: `E` has both hands horizontally level; `K` has reaching hand held high above the base hand.\n"
+            "- **J vs Q**: `J` draws onto a lower palm (|dy| high); `Q` hooks at the same level horizontally.\n"
+        )
+        st.markdown(
+            "**One-Hand Alphabets (6)**:\n"
+            f"{', '.join(sorted('CILOUV'))}\n\n"
+            "- **I**: Single-hand sign (index up with thumb relaxed/loose).\n"
+            "- **L**: Single-hand 'L' (index up + thumb extended wide at 90°).\n"
+            "- **1**: Single-hand digit (index up + thumb folded into fist).\n"
+        )
+        st.markdown(f"**Digits (10)**: {', '.join(DIGITS)}")
+        if not alphanumeric_only:
+            st.markdown(f"**ISL Words ({len(ISL_WORDS)})**: {', '.join(sorted(ISL_WORDS))}")
+
+    return classifier, conf_threshold, stability_frames, int(cam_index), alphanumeric_only
 
 
-# ── Main content ────────────────────────────────────────────────────
+# ── Main Application ────────────────────────────────────────────────
 
-def render_header():
-    """Render the main header."""
+def main():
+    tracker = load_hand_tracker()
+    classifier, conf_threshold, stability_frames, cam_index, alphanumeric_only = render_sidebar()
+
+    # Header
+    st.markdown('<p class="main-title">SignScribe</p>', unsafe_allow_html=True)
     st.markdown(
-        '<p class="main-title">SignScribe</p>',
+        '<p class="subtitle">Real-time Sign Language to Text Generator</p>',
         unsafe_allow_html=True,
     )
-    st.markdown(
-        '<p class="subtitle">'
-        'Real-time Sign Language Recognition &mdash; '
-        'Rule-based vs LLM Translation Comparison'
-        '</p>',
-        unsafe_allow_html=True,
-    )
 
+    gen: SignTextGenerator = st.session_state.text_generator
 
-def render_gloss_tokens(tokens: list[str]):
-    """Display the accumulated gloss tokens as styled badges."""
-    if not tokens:
-        st.markdown("*Waiting for gestures...*")
-        return
+    # 2-column layout: Camera on Left, Text output & Controls on Right
+    col_cam, col_output = st.columns([1.1, 1], gap="medium")
 
-    html = " ".join(
-        f'<span class="gloss-token">{t}</span>' for t in tokens
-    )
-    st.markdown(html, unsafe_allow_html=True)
+    with col_cam:
+        st.markdown("### 📷 Video Feed")
 
+        col_btn1, col_btn2 = st.columns([1, 1])
+        with col_btn1:
+            start_clicked = st.button(
+                "▶️ Start Camera" if not st.session_state.running else "⏹️ Stop Camera",
+                type="primary",
+                use_container_width=True,
+            )
+            if start_clicked:
+                st.session_state.running = not st.session_state.running
+                if not st.session_state.running:
+                    _release_camera()
+                    st.session_state.last_pred_label = "IDLE"
+                    st.session_state.last_pred_conf = 0.0
+                    st.rerun()
 
-def render_outputs(path_a: str, path_b: str):
-    """Render Path A and Path B outputs side by side."""
-    col_a, col_b = st.columns(2)
+        with col_btn2:
+            if st.button("🔄 Reset Text", use_container_width=True):
+                gen.reset()
+                st.session_state.last_committed_token = ""
+                st.rerun()
 
-    with col_a:
-        st.markdown(
-            '<p class="path-a-header">Path A: Rule-Based</p>',
-            unsafe_allow_html=True,
-        )
-        display_a = path_a if path_a else "..."
-        st.markdown(
-            f'<div class="sentence-output sentence-a">{display_a}</div>',
-            unsafe_allow_html=True,
-        )
+        video_placeholder = st.empty()
+        status_placeholder = st.empty()
 
-    with col_b:
-        st.markdown(
-            '<p class="path-b-header">Path B: LLM (T5-small)</p>',
-            unsafe_allow_html=True,
-        )
-        display_b = path_b if path_b else "..."
-        st.markdown(
-            f'<div class="sentence-output sentence-b">{display_b}</div>',
-            unsafe_allow_html=True,
-        )
+    with col_output:
+        st.markdown("### 📝 Generated Text")
 
-
-def render_manual_input(rule_mapper, llm_mapper):
-    """Manual text input mode for testing without webcam."""
-    st.markdown("---")
-    st.markdown("### Manual Gloss Input")
-    st.markdown(
-        "Type ISL gloss tokens (space-separated) to test the "
-        "translation paths without the webcam."
-    )
-
-    gloss_input = st.text_input(
-        "Enter glosses:",
-        placeholder="e.g., I SCHOOL GO",
-        key="manual_gloss",
-    )
-
-    if gloss_input:
-        col_a, col_b = st.columns(2)
-
-        with col_a:
+        current_text = gen.get_text()
+        if current_text:
             st.markdown(
-                '<p class="path-a-header">Path A: Rule-Based</p>',
+                f'<div class="text-output-card">{current_text}</div>',
                 unsafe_allow_html=True,
             )
-            path_a = rule_mapper.map(gloss_input)
+        else:
             st.markdown(
-                f'<div class="sentence-output sentence-a">{path_a}</div>',
+                '<div class="text-output-card placeholder-text">'
+                'Start the camera and sign to generate text here...</div>',
                 unsafe_allow_html=True,
             )
 
-        with col_b:
-            st.markdown(
-                '<p class="path-b-header">Path B: LLM (T5-small)</p>',
-                unsafe_allow_html=True,
-            )
-            if llm_mapper:
-                path_b = llm_mapper.map(gloss_input)
-            else:
-                path_b = "(LLM not loaded)"
-            st.markdown(
-                f'<div class="sentence-output sentence-b">{path_b}</div>',
-                unsafe_allow_html=True,
-            )
+        # Quick action controls
+        st.markdown("<br>", unsafe_allow_html=True)
+        col_act1, col_act2, col_act3 = st.columns(3)
+        with col_act1:
+            if st.button("␣ Add Space", use_container_width=True):
+                gen.add_space()
+                st.rerun()
+        with col_act2:
+            if st.button("⌫ Backspace", use_container_width=True):
+                gen.backspace()
+                st.rerun()
+        with col_act3:
+            if st.button("📋 Copy Text", use_container_width=True):
+                st.toast("Text ready to copy from output box above!")
 
+        # Raw Token Badges
+        st.markdown("#### Recognized Signs:")
+        tokens = gen.get_raw_tokens()
+        if tokens:
+            badge_html = " ".join(f'<span class="token-badge">{t}</span>' for t in tokens[-15:])
+            st.markdown(badge_html, unsafe_allow_html=True)
+        else:
+            st.markdown("<span style='color: #64748b;'>No signs recorded yet.</span>", unsafe_allow_html=True)
 
-def _release_camera():
-    """Release the session camera, if one is open."""
-    camera = st.session_state.camera
-    if camera is not None:
-        camera.release()
-    st.session_state.camera = None
-    st.session_state.window_buffer = None
-
-
-def render_webcam_mode(tracker, classifier, rule_mapper, llm_mapper, confidence_threshold):
-    """Render and process one webcam frame per Streamlit rerun.
-
-    Processing one frame at a time keeps Streamlit responsive: the Stop
-    Camera button is evaluated on every rerun rather than being blocked by
-    an infinite capture loop.
-    """
-    from src.buffering.sliding_window import SlidingWindowBuffer
-
-    st.markdown("---")
-    st.markdown("### Live Webcam Recognition")
-
-    # Controls
-    col_start, col_clear, col_info = st.columns([1, 1, 3])
-    with col_start:
-        start_btn = st.button(
-            "Start Camera" if not st.session_state.running else "Stop Camera",
-            type="primary",
-        )
-        if start_btn:
-            st.session_state.running = not st.session_state.running
-            if not st.session_state.running:
-                st.session_state.gloss_history = []
-                st.session_state.last_prediction = ""
-                st.session_state.consecutive_same = 0
-                _release_camera()
-
-    with col_clear:
-        if st.button("Clear History"):
-            st.session_state.gloss_history = []
-            st.session_state.path_a_output = ""
-            st.session_state.path_b_output = ""
-
-    # Gloss token display
-    st.markdown("**Recognised Glosses:**")
-    render_gloss_tokens(st.session_state.gloss_history)
-
-    # Output display
-    render_outputs(
-        st.session_state.path_a_output,
-        st.session_state.path_b_output,
-    )
-
-    # Webcam feed
+    # ── Camera Processing Loop ──────────────────────────────────────
     if st.session_state.running:
         if not classifier:
-            st.error(
-                "Classifier not loaded. Train it first: "
-                "`python -m src.classifier.train`"
-            )
+            st.error("Cannot start: Classifier weights not found. Please train the model.")
+            st.session_state.running = False
             return
 
+        from src.buffering.sliding_window import SlidingWindowBuffer
+
         if st.session_state.window_buffer is None:
-            # 50% overlap balances responsiveness with distinct temporal
-            # evidence; every classification uses exactly 30 frames.
             st.session_state.window_buffer = SlidingWindowBuffer(
-                overlap=WINDOW_SIZE // 2
+                overlap=WINDOW_SIZE // 2,
+                min_active_ratio=0.6,
+                max_idle_frames=6,
             )
 
         if st.session_state.camera is None:
-            cap = cv2.VideoCapture(0)
+            cap = cv2.VideoCapture(cam_index)
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
             st.session_state.camera = cap
 
         cap = st.session_state.camera
         if not cap.isOpened():
-            st.error("Cannot open webcam. Is it connected?")
+            st.error(f"Cannot open webcam at index {cam_index}.")
             st.session_state.running = False
             _release_camera()
             return
 
-        frame_interval = 1.0 / TARGET_FPS
         t_frame_start = time.perf_counter()
         ret, frame_bgr = cap.read()
         if not ret:
-            st.warning("Failed to read from webcam.")
+            st.warning("Failed to grab camera frame.")
             st.session_state.running = False
             _release_camera()
             return
 
+        # HORIZONTAL FLIP: Mirror the camera so it acts like a natural selfie mirror
+        # and aligns with MediaPipe's mirror-mode handedness detection.
+        frame_bgr = cv2.flip(frame_bgr, 1)
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
+        # MediaPipe landmark extraction
         t_mp_start = time.perf_counter()
         features, results = tracker.extract_landmarks(frame_rgb)
-        mp_ms = (time.perf_counter() - t_mp_start) * 1000
+        mp_ms = (time.perf_counter() - t_mp_start) * 1000.0
 
-        st.session_state.latency_buffer.append(mp_ms)
-        if len(st.session_state.latency_buffer) > 30:
-            st.session_state.latency_buffer.pop(0)
-        st.session_state.avg_mediapipe_ms = np.mean(st.session_state.latency_buffer)
+        num_hands = len(results.multi_hand_landmarks) if (results and results.multi_hand_landmarks) else 0
 
-        frame_bgr = tracker.draw_landmarks(frame_bgr, results)
-        num_hands = len(results.multi_hand_landmarks) if results.multi_hand_landmarks else 0
-        window = st.session_state.window_buffer.add_frame(features)
+        # Feed buffer with hand gating
+        window = st.session_state.window_buffer.add_frame(features, has_hands=(num_hands > 0))
 
         if window is not None and num_hands > 0:
-            label, confidence, clf_ms = classifier.predict(window)
-            st.session_state.classifier_latency_buffer.append(clf_ms)
-            if len(st.session_state.classifier_latency_buffer) > 30:
-                st.session_state.classifier_latency_buffer.pop(0)
-            st.session_state.avg_classifier_ms = np.mean(
-                st.session_state.classifier_latency_buffer
+            pred_label, pred_conf, clf_ms = classifier.predict(
+                window, min_active_frames=12, alphanumeric_only=alphanumeric_only
             )
 
-            if confidence >= confidence_threshold:
-                if label == st.session_state.last_prediction:
+            if pred_label != "IDLE" and pred_conf >= conf_threshold:
+                if pred_label == st.session_state.last_pred_label:
                     st.session_state.consecutive_same += 1
                 else:
                     st.session_state.consecutive_same = 1
-                    st.session_state.last_prediction = label
+                    st.session_state.last_pred_label = pred_label
 
-                if st.session_state.consecutive_same >= st.session_state.stability_threshold:
-                    if (not st.session_state.gloss_history or
-                            st.session_state.gloss_history[-1] != label):
-                        st.session_state.gloss_history.append(label)
-                        st.session_state.path_a_output = rule_mapper.map_sequence(
-                            st.session_state.gloss_history
-                        )
-                        if llm_mapper:
-                            st.session_state.path_b_output = llm_mapper.map_sequence(
-                                st.session_state.gloss_history
-                            )
+                # Stability confirmation
+                if st.session_state.consecutive_same >= stability_frames:
+                    # Debounce: avoid repeatedly emitting the exact same sign while holding
+                    if pred_label != st.session_state.last_committed_token:
+                        gen.add_token(pred_label)
+                        st.session_state.last_committed_token = pred_label
                     st.session_state.consecutive_same = 0
+            else:
+                if pred_label == "IDLE":
+                    st.session_state.last_pred_label = "IDLE"
+                    st.session_state.last_pred_conf = 0.0
 
-            st.session_state.last_confidence = confidence
+            st.session_state.last_pred_conf = pred_conf
 
+        elif num_hands == 0:
+            st.session_state.last_pred_label = "IDLE"
+            st.session_state.last_pred_conf = 0.0
+            st.session_state.consecutive_same = 0
+            # Allow signing the same sign again after hands are lowered
+            st.session_state.last_committed_token = ""
+
+        # Draw landmarks on display frame
+        frame_display = tracker.draw_landmarks(frame_bgr.copy(), results)
+
+        # Visual HUD overlay on video
+        if num_hands == 2:
+            status_text = "2 Hands (Two-Hand Gesture)"
+            color = (0, 255, 0)
+        elif num_hands == 1:
+            status_text = "1 Hand (1-Hand Sign: C,I,L,O,U,V or 0-9)"
+            color = (0, 200, 255)
+        else:
+            status_text = "Idle (No hands)"
+            color = (128, 128, 128)
+
+        mode_tag = "Chars" if alphanumeric_only else "All 97"
         cv2.putText(
-            frame_bgr, f"MP: {mp_ms:.0f}ms | Hands: {num_hands}",
-            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-            (0, 255, 0) if mp_ms <= BUDGET_MEDIAPIPE_MS else (0, 0, 255), 2,
+            frame_display,
+            f"[{mode_tag}] Hands: {status_text} | MP: {mp_ms:.0f}ms",
+            (15, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            color,
+            2,
         )
-        if st.session_state.last_prediction:
+
+        if st.session_state.last_pred_label != "IDLE" and st.session_state.last_pred_conf > 0:
+            is_2h = classifier.is_two_hand_sign(st.session_state.last_pred_label)
+            sign_tag = "[2-Hand]" if is_2h else "[1-Hand]"
             cv2.putText(
-                frame_bgr,
-                f"Pred: {st.session_state.last_prediction} "
-                f"({st.session_state.last_confidence:.0%})",
-                (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2,
+                frame_display,
+                f"Sign: {st.session_state.last_pred_label} ({st.session_state.last_pred_conf:.0%}) {sign_tag}",
+                (15, 65),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.75,
+                (0, 255, 255),
+                2,
             )
 
-        st.image(
-            cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB),
-            channels="RGB", use_column_width=True,
-        )
-        st.session_state.frame_count += 1
+        # Render display image directly to Streamlit image element
+        display_rgb = cv2.cvtColor(frame_display, cv2.COLOR_BGR2RGB)
+        video_placeholder.image(display_rgb, channels="RGB", use_container_width=True)
 
+        hand_info = (
+            "🟢 Both Hands (2-Hand Sign)"
+            if num_hands == 2
+            else (
+                "🟡 1 Hand (Note: A,B,D... need 2 hands)"
+                if num_hands == 1
+                else "⚪ Idle"
+            )
+        )
+        status_placeholder.caption(
+            f"⚡ {hand_info} | MP: {mp_ms:.1f}ms | Detected: **{st.session_state.last_pred_label}** "
+            f"({st.session_state.last_pred_conf:.0%})"
+        )
+
+        # Regulate frame rate to TARGET_FPS
         elapsed = time.perf_counter() - t_frame_start
+        frame_interval = 1.0 / TARGET_FPS
         if elapsed < frame_interval:
             time.sleep(frame_interval - elapsed)
+
         st.rerun()
-
-
-# ── Evaluation panel ────────────────────────────────────────────────
-
-def render_evaluation_panel(rule_mapper, llm_mapper):
-    """Show evaluation metrics comparison panel."""
-    st.markdown("---")
-    st.markdown("### Evaluation Comparison")
-    st.markdown(
-        "Run the evaluation module with your test data to see metrics here. "
-        "For now, here's a comparison using the manual inputs above."
-    )
-
-    # Quick demo with a few examples
-    test_glosses = [
-        "I SCHOOL GO",
-        "HE FOOD EAT",
-        "SHE BOOK READ",
-        "I WATER DRINK FUTURE",
-        "HELLO",
-        "WE PARK GO TOMORROW",
-        "YOU HELP WANT",
-        "I FRIEND HELP",
-    ]
-    references = [
-        "I go to school.",
-        "He eats food.",
-        "She reads a book.",
-        "I will drink water.",
-        "Hello.",
-        "We will go to the park tomorrow.",
-        "Do you want help?",
-        "I help my friend.",
-    ]
-
-    rule_preds = [rule_mapper.map(g) for g in test_glosses]
-    llm_preds = (
-        [llm_mapper.map(g) for g in test_glosses]
-        if llm_mapper
-        else ["(not available)"] * len(test_glosses)
-    )
-
-    # Display comparison table
-    comparison_data = []
-    for g, ref, rp, lp in zip(test_glosses, references, rule_preds, llm_preds):
-        comparison_data.append({
-            "Gloss": g,
-            "Reference": ref,
-            "Path A (Rules)": rp,
-            "Path B (LLM)": lp,
-        })
-
-    st.dataframe(comparison_data, use_container_width=True, hide_index=True)
-
-    # Compute metrics if LLM is available
-    if llm_mapper:
-        from src.evaluation.metrics import compute_bleu, compute_hallucination_rate
-
-        col_bleu, col_hall = st.columns(2)
-
-        with col_bleu:
-            st.markdown("#### BLEU-4 Scores")
-            rule_bleu = compute_bleu(rule_preds, references)
-            llm_bleu = compute_bleu(llm_preds, references)
-            st.metric("Path A (Rule-based)", f"{rule_bleu['corpus_bleu4']:.1f}")
-            st.metric("Path B (LLM)", f"{llm_bleu['corpus_bleu4']:.1f}")
-
-        with col_hall:
-            st.markdown("#### Hallucination Rate")
-            rule_hall = compute_hallucination_rate(rule_preds, test_glosses)
-            llm_hall = compute_hallucination_rate(llm_preds, test_glosses)
-            st.metric(
-                "Path A (Rule-based)",
-                f"{rule_hall['hallucination_rate']:.1%}",
-            )
-            st.metric(
-                "Path B (LLM)",
-                f"{llm_hall['hallucination_rate']:.1%}",
-            )
-
-
-# ── Main app ────────────────────────────────────────────────────────
-
-def main():
-    tracker, classifier, rule_mapper, llm_mapper, confidence_threshold = (
-        render_sidebar()
-    )
-    render_header()
-
-    # Tab layout
-    tab_live, tab_manual, tab_eval = st.tabs([
-        "Live Webcam",
-        "Manual Input",
-        "Evaluation",
-    ])
-
-    with tab_live:
-        render_webcam_mode(
-            tracker, classifier, rule_mapper, llm_mapper,
-            confidence_threshold,
-        )
-
-    with tab_manual:
-        render_manual_input(rule_mapper, llm_mapper)
-
-    with tab_eval:
-        render_evaluation_panel(rule_mapper, llm_mapper)
 
 
 if __name__ == "__main__":

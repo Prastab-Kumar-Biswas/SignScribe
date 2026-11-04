@@ -54,7 +54,7 @@ class HandTracker:
     def __init__(
         self,
         max_hands: int = NUM_HANDS,
-        detection_confidence: float = 0.7,
+        detection_confidence: float = 0.5,
         tracking_confidence: float = 0.5,
         process_scale: float = 1.0,
     ):
@@ -146,9 +146,12 @@ class HandTracker:
     def draw_landmarks(
         self, frame_bgr: np.ndarray, results: object
     ) -> np.ndarray:
-        """Draw detected hand landmarks and connections on the frame."""
+        """Draw detected hand landmarks, connections, and handedness tags."""
         if results and results.multi_hand_landmarks:
-            for hand_landmarks in results.multi_hand_landmarks:
+            h, w = frame_bgr.shape[:2]
+            handedness = getattr(results, "multi_handedness", None)
+
+            for idx, hand_landmarks in enumerate(results.multi_hand_landmarks):
                 self.mp_drawing.draw_landmarks(
                     frame_bgr,
                     hand_landmarks,
@@ -156,6 +159,23 @@ class HandTracker:
                     self.mp_drawing_styles.get_default_hand_landmarks_style(),
                     self.mp_drawing_styles.get_default_hand_connections_style(),
                 )
+
+                # Draw handedness tag near the wrist
+                if handedness and idx < len(handedness):
+                    label = handedness[idx].classification[0].label
+                    wrist = hand_landmarks.landmark[0]
+                    wx, wy = int(wrist.x * w), int(wrist.y * h)
+                    color = (255, 180, 0) if label.lower() == "left" else (0, 220, 255)
+                    cv2.putText(
+                        frame_bgr,
+                        label,
+                        (wx - 20, wy + 25),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.55,
+                        color,
+                        2,
+                    )
+
         return frame_bgr
 
     def close(self):

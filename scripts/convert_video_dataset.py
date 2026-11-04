@@ -213,14 +213,15 @@ def convert_dataset(
         if d.is_dir() and not d.name.startswith(".")
     )
 
-    if not class_dirs:
-        # Maybe videos are one level deeper
-        for sub in input_dir.iterdir():
-            if sub.is_dir():
-                deeper = sorted(d for d in sub.iterdir() if d.is_dir())
-                if deeper:
-                    class_dirs = deeper
-                    break
+    if len(class_dirs) == 1:
+        # Kaggle zip extraction often creates an extra nested folder.
+        # If there's only 1 folder, check inside it.
+        inner_dirs = sorted(
+            d for d in class_dirs[0].iterdir()
+            if d.is_dir() and not d.name.startswith(".")
+        )
+        if len(inner_dirs) > 1:
+            class_dirs = inner_dirs
 
     print(f"Found {len(class_dirs)} class folders in {input_dir}")
     print(f"Output directory: {output_dir}")

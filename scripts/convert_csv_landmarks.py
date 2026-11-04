@@ -163,8 +163,16 @@ def convert_csv(
     labels = sorted(df[label_col].unique())
 
     for label_value in labels:
-        # Map to our uppercase label format
-        label_str = str(label_value).strip().upper()
+        # Map integer 0-25 to A-Z
+        if str(label_value).isdigit():
+            val = int(label_value)
+            if 0 <= val <= 25:
+                label_str = chr(65 + val)
+            else:
+                label_str = str(val)
+        else:
+            # Map to our uppercase label format
+            label_str = str(label_value).strip().upper()
 
         label_dir = output_dir / label_str
         label_dir.mkdir(parents=True, exist_ok=True)

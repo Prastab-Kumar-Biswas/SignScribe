@@ -41,9 +41,9 @@ ISL_WORDS: list[str] = [
     # --- Animals (10) ---
     "BEAR", "CROCODILE", "DEER", "ELEPHANT", "GIRAFFE",
     "LION", "MONKEY", "PEACOCK", "PIGEON", "SPARROW",
-    # --- Vegetables / Food (8) ---
+    # --- Vegetables / Food (9) ---
     "BRINJAL", "CABBAGE", "CARROT", "CAULIFLOWER", "CHILLI",
-    "CUCUMBER", "ONION", "RADISH",
+    "CUCUMBER", "LEMON", "ONION", "RADISH",
     # --- Actions / Verbs (10) ---
     "BREAK", "CLEAN", "CLOSE", "COME", "COOK",
     "CRY", "DRINK", "GIVE", "HUG", "JUMP",
@@ -63,7 +63,7 @@ ISL_WORDS: list[str] = [
     "SWITCH", "TIGER", "TURTLE", "VOLCANO", "WHAT_IS_YOUR_NAME",
 ]
 VOCAB = ALPHABETS + DIGITS + ISL_WORDS
-NUM_CLASSES = len(VOCAB)  # should be 96 when ISL_WORDS has 60 entries
+NUM_CLASSES = len(VOCAB)  # should be 97 when ISL_WORDS has 61 entries
 
 # ── Dataset sizing (synopsis targets) ────────────────────────────────
 TARGET_SIGNERS = 10         # aspirational; realistically 1-3

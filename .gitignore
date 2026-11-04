@@ -26,7 +26,8 @@ Desktop.ini
 # Project-specific
 data/raw/
 data/processed/
-models/classifier.pt
+data/*.zip
+*.zip
 models/llm_finetuned/
 
 # Jupyter / Colab

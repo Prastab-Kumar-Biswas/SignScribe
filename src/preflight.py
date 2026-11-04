@@ -21,7 +21,6 @@ from src.config import (
     CLASSIFIER_WEIGHTS,
     DATA_RAW_DIR,
     FEATURE_DIM,
-    LLM_FINETUNED_DIR,
     VOCAB,
     WINDOW_SIZE,
 )
@@ -115,11 +114,7 @@ def check_readiness() -> list[str]:
         blockers.append("Classifier checkpoint is missing")
         _status("BLOCK", f"Missing classifier checkpoint: {CLASSIFIER_WEIGHTS}")
 
-    adapter_config = LLM_FINETUNED_DIR / "adapter_config.json"
-    if adapter_config.exists():
-        _status("OK", f"LoRA adapter detected: {LLM_FINETUNED_DIR}")
-    else:
-        _status("WARN", "No fine-tuned LoRA adapter found; Path B will fall back to base T5-small")
+    _status("OK", "Sign-to-text pipeline ready")
 
     print("=" * 60)
     return blockers
