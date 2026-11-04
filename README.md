@@ -57,8 +57,8 @@ Webcam (Mirrored) ──► MediaPipe Hands (21 Landmarks × 2 hands)
 
 ```bash
 # Clone the repository
-git clone https://github.com/Prastab-Kumar-Biswas/signscribe.git
-cd signscribe
+git clone https://github.com/Prastab-Kumar-Biswas/SignScribe.git
+cd SignScribe
 
 # Create and activate virtual environment (Python 3.10 - 3.12)
 python -m venv venv
