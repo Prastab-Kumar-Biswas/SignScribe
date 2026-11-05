@@ -243,13 +243,21 @@ class GesturePredictor:
 
         t_start = time.perf_counter()
 
+        # Check recent presence in the last 6 frames (ensures both hands are CURRENTLY active):
+        recent_h1 = int(np.sum(np.any(window[-6:, :63] != 0, axis=1)))
+        recent_h2 = int(np.sum(np.any(window[-6:, 63:] != 0, axis=1)))
+
         # ── CASE 1: Both hands are active (Two-Handed Gesture) ───────────────
-        # When both hands have at least min_active_frames of presence, evaluate both
-        # canonical (Slot 0=Left, Slot 1=Right) and inverted (Slot 0=Right, Slot 1=Left)
-        # orientations along with their horizontally mirrored representations.
+        # When both hands have at least min_active_frames of presence and both are
+        # currently detected, evaluate both canonical and inverted orientations.
         # Group 1 (A, B, E, P, Q, S, T, X, Z) were recorded in canonical orientation.
         # Group 2 (D, F, G, H, J, K, M, N, R, W, Y) were recorded in inverted orientation.
-        if h1_frames >= min_active_frames and h2_frames >= min_active_frames:
+        if (
+            h1_frames >= min_active_frames
+            and h2_frames >= min_active_frames
+            and recent_h1 >= 2
+            and recent_h2 >= 2
+        ):
             # Dynamically determine canonical vs inverted based on actual wrist positions:
             h0_x = float(np.mean(window[:, 0]))
             h1_x = float(np.mean(window[:, 63]))
@@ -436,6 +444,13 @@ class GesturePredictor:
         logits = self.model(x)  # (6, num_classes)
         if alphanumeric_only and self.word_indices:
             logits[:, self.word_indices] = -float("inf")
+        # In single-hand gestures, strictly mask out letters that require two hands (eliminates H, P, Z, etc.):
+        two_hand_indices = [
+            self.label_to_idx[lbl]
+            for lbl in TWO_HAND_LETTERS
+            if lbl in self.label_to_idx
+        ]
+        logits[:, two_hand_indices] = -float("inf")
         probs = torch.softmax(logits, dim=1).numpy()
 
         # Best clean prediction across all 4 slot & chirality permutations (Hyp 0..3):
@@ -474,9 +489,21 @@ class GesturePredictor:
             inference_ms = (time.perf_counter() - t_start) * 1000.0
             return "I", best_letter_conf, inference_ms
 
-        # 4. Letter 'U' single-handed checks (resolves 'U' being intercepted by digit '1'):
-        # Format A (dataset cup shape): thumb and index extended upwards (thumb_spread >= 0.20).
-        # In digit '1', thumb is folded across fist (thumb_spread <= 0.14).
+        # 4. Letter 'U' single-handed checks (resolves 'U' being intercepted by digit '1' or '4'):
+        # Format A (dataset cup shape): thumb and index extended upwards in a wide U-shape, other 3 fingers curled:
+        d_th_mcp9 = float(np.linalg.norm(pts_active[4] - pts_active[9]))
+        th_elevated = pts_active[4, 1] < pts_active[9, 1]
+        if (
+            ext_idx
+            and not ext_mid
+            and not ext_rng
+            and not ext_pnk
+            and (d_th_mcp9 >= 0.18 or thumb_spread >= 0.20)
+            and th_elevated
+        ):
+            inference_ms = (time.perf_counter() - t_start) * 1000.0
+            return "U", 0.98, inference_ms
+
         if best_letter_lbl == "U" and best_letter_conf >= 0.40 and thumb_spread >= 0.20:
             inference_ms = (time.perf_counter() - t_start) * 1000.0
             return "U", best_letter_conf, inference_ms
