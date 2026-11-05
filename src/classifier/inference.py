@@ -372,6 +372,22 @@ class GesturePredictor:
                 else:
                     label = "M"
 
+            # 8. Two-handed ISL 'U' (dominant index touching pinky finger of base hand):
+            # In ISL, vowel U is formed by touching the pinky fingertip of the open base hand.
+            # Dominant hand is pointing (ext finger count <= 2), base hand is open (pinky extended, ext count >= 3).
+            c0_ext = _count_extended_fingers(pts0)
+            c1_ext = _count_extended_fingers(pts1)
+            ext_pnk0 = np.linalg.norm(pts0[20] - pts0[0]) > np.linalg.norm(pts0[18] - pts0[0]) * 1.15
+            ext_pnk1 = np.linalg.norm(pts1[20] - pts1[0]) > np.linalg.norm(pts1[18] - pts1[0]) * 1.15
+            d01_pnk = float(np.linalg.norm(pts0[8] - pts1[20]))
+            d10_pnk = float(np.linalg.norm(pts1[8] - pts0[20]))
+            is_u_01 = (c0_ext <= 2 and c1_ext >= 3 and ext_pnk1 and d01_pnk <= 0.12 and d01_pnk < d01_idx and d01_pnk < d01_mid)
+            is_u_10 = (c1_ext <= 2 and c0_ext >= 3 and ext_pnk0 and d10_pnk <= 0.12 and d10_pnk < d10_idx and d10_pnk < d10_mid)
+            if is_u_01 or is_u_10:
+                if label in {"H", "P", "T", "K", "E", "D", "X", "B", "A", "O"}:
+                    label = "U"
+                    confidence = max(confidence, 0.95)
+
             inference_ms = (time.perf_counter() - t_start) * 1000.0
             return label, confidence, inference_ms
 
@@ -458,7 +474,21 @@ class GesturePredictor:
             inference_ms = (time.perf_counter() - t_start) * 1000.0
             return "I", best_letter_conf, inference_ms
 
-        # 4. Pure Chirality-Invariant Geometric Digit Disambiguation:
+        # 4. Letter 'U' single-handed checks (resolves 'U' being intercepted by digit '1'):
+        # Format A (dataset cup shape): thumb and index extended upwards (thumb_spread >= 0.20).
+        # In digit '1', thumb is folded across fist (thumb_spread <= 0.14).
+        if best_letter_lbl == "U" and best_letter_conf >= 0.40 and thumb_spread >= 0.20:
+            inference_ms = (time.perf_counter() - t_start) * 1000.0
+            return "U", best_letter_conf, inference_ms
+
+        # Format B (parallel fingers): index and middle extended together side-by-side.
+        # In 'U', index and middle are held close (d_idx_mid <= 0.065), unlike 'V' or digit '2' (>= 0.085).
+        d_idx_mid = float(np.linalg.norm(pts_active[8] - pts_active[12]))
+        if ext_idx and ext_mid and not ext_rng and not ext_pnk and d_idx_mid <= 0.065:
+            inference_ms = (time.perf_counter() - t_start) * 1000.0
+            return "U", max(best_letter_conf, 0.95), inference_ms
+
+        # 5. Pure Chirality-Invariant Geometric Digit Disambiguation:
         # Euclidean fingertip distances provide 100% symmetric accuracy on both hands.
         geom_digit = _classify_digit_geometry(pts_active)
         if geom_digit is not None:
