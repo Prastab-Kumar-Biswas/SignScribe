@@ -47,7 +47,12 @@ def run():
         print(f"\n[ERROR] {e}")
         return
 
-    tracker = HandTracker(detection_confidence=0.5, tracking_confidence=0.5)
+    tracker = HandTracker(
+        model_complexity=1,
+        detection_confidence=0.5,
+        tracking_confidence=0.35,
+        max_persistence_frames=4,
+    )
     window_buffer = SlidingWindowBuffer(
         overlap=WINDOW_SIZE // 2,
         min_active_ratio=0.6,
@@ -104,11 +109,12 @@ def run():
             features, results = tracker.extract_landmarks(frame_rgb)
 
             num_hands = len(results.multi_hand_landmarks) if (results and results.multi_hand_landmarks) else 0
+            has_active_hands = (num_hands > 0) or bool(np.any(features != 0))
 
             # Hand-gated window accumulation
-            window = window_buffer.add_frame(features, has_hands=(num_hands > 0))
+            window = window_buffer.add_frame(features, has_hands=has_active_hands)
 
-            if window is not None and num_hands > 0:
+            if window is not None and has_active_hands:
                 label, conf, _ = classifier.predict(
                     window, min_active_frames=12, alphanumeric_only=alphanumeric_only
                 )

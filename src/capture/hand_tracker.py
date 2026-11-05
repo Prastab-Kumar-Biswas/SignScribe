@@ -41,9 +41,10 @@ from src.config import (
 class HandTracker:
     """Wraps MediaPipe Hands for real-time landmark extraction.
 
-    Design note: we use `model_complexity=0` (lite model) because it's
-    the fastest option on CPU.  `max_num_hands=2` matches our 2-hand
-    feature vector design.
+    Design note: we use `model_complexity=1` (Full model) with
+    kinematic joint priors for occlusion resilience, and temporal
+    persistence to bridge brief finger/hand occlusions.
+    `max_num_hands=2` matches our 2-hand feature vector design.
 
     `process_scale` controls optional frame downscaling before feeding
     MediaPipe.  Since landmarks are normalized 0-1, downscaling doesn't
@@ -54,22 +55,34 @@ class HandTracker:
     def __init__(
         self,
         max_hands: int = NUM_HANDS,
+        model_complexity: int = 1,
         detection_confidence: float = 0.5,
-        tracking_confidence: float = 0.5,
+        tracking_confidence: float = 0.35,
         process_scale: float = 1.0,
+        max_persistence_frames: int = 4,
     ):
         self.mp_hands = mp.solutions.hands
         self.mp_drawing = mp.solutions.drawing_utils
         self.mp_drawing_styles = mp.solutions.drawing_styles
         self.process_scale = process_scale
+        self.max_persistence_frames = max_persistence_frames
 
         self.hands = self.mp_hands.Hands(
             static_image_mode=False,       # video mode → faster tracking
             max_num_hands=max_hands,
-            model_complexity=0,            # 0 = lite (fastest)
+            model_complexity=model_complexity,  # 1 = full model (occlusion robust)
             min_detection_confidence=detection_confidence,
             min_tracking_confidence=tracking_confidence,
         )
+
+        # Cache for short-term temporal persistence during momentary occlusions
+        self._last_landmarks: list[np.ndarray | None] = [None] * max_hands
+        self._missing_counts: list[int] = [0] * max_hands
+
+    def reset(self) -> None:
+        """Reset internal temporal persistence state."""
+        self._last_landmarks = [None] * len(self._last_landmarks)
+        self._missing_counts = [0] * len(self._missing_counts)
 
     def extract_landmarks(
         self, frame_rgb: np.ndarray
@@ -79,7 +92,8 @@ class HandTracker:
         Returns:
             features: np.ndarray of shape (FEATURE_DIM,) = (126,).
                       If fewer than 2 hands are detected, the missing
-                      hand's 63 values are filled with zeros.
+                      hand's 63 values are filled with zeros (or forward-filled
+                      if recently occluded).
             results:  The raw MediaPipe results object (for drawing).
         """
         # Optionally downscale for faster processing
@@ -96,6 +110,7 @@ class HandTracker:
 
         # Initialise with zeros — missing hands stay as zero-vectors
         features = np.zeros(FEATURE_DIM, dtype=np.float32)
+        hand_detected_in_slot = [False] * NUM_HANDS
 
         if results.multi_hand_landmarks:
             # MediaPipe returns detections in confidence order, which may
@@ -134,6 +149,7 @@ class HandTracker:
             for hand_idx, hand_landmarks in enumerate(hands_to_encode):
                 if hand_landmarks is None:
                     continue
+                hand_detected_in_slot[hand_idx] = True
                 offset = hand_idx * NUM_LANDMARKS * NUM_COORDS  # 0 or 63
                 for lm_idx, lm in enumerate(hand_landmarks.landmark):
                     base = offset + lm_idx * NUM_COORDS
@@ -141,14 +157,33 @@ class HandTracker:
                     features[base + 1] = lm.y
                     features[base + 2] = lm.z
 
+        # Apply temporal persistence for briefly occluded hands
+        if self.max_persistence_frames > 0:
+            for slot in range(min(len(hand_detected_in_slot), NUM_HANDS)):
+                offset = slot * NUM_LANDMARKS * NUM_COORDS
+                dim = NUM_LANDMARKS * NUM_COORDS
+                if hand_detected_in_slot[slot]:
+                    self._last_landmarks[slot] = features[offset : offset + dim].copy()
+                    self._missing_counts[slot] = 0
+                else:
+                    if (
+                        self._last_landmarks[slot] is not None
+                        and self._missing_counts[slot] < self.max_persistence_frames
+                    ):
+                        self._missing_counts[slot] += 1
+                        features[offset : offset + dim] = self._last_landmarks[slot]
+                    else:
+                        self._last_landmarks[slot] = None
+                        self._missing_counts[slot] = 0
+
         return features, results
 
     def draw_landmarks(
         self, frame_bgr: np.ndarray, results: object
     ) -> np.ndarray:
         """Draw detected hand landmarks, connections, and handedness tags."""
+        h, w = frame_bgr.shape[:2]
         if results and results.multi_hand_landmarks:
-            h, w = frame_bgr.shape[:2]
             handedness = getattr(results, "multi_handedness", None)
 
             for idx, hand_landmarks in enumerate(results.multi_hand_landmarks):
@@ -174,6 +209,33 @@ class HandTracker:
                         0.55,
                         color,
                         2,
+                    )
+
+        # Draw any persisted hands that were occluded in this frame
+        if self.max_persistence_frames > 0:
+            for slot in range(NUM_HANDS):
+                if (
+                    self._missing_counts[slot] > 0
+                    and self._last_landmarks[slot] is not None
+                ):
+                    pts = self._last_landmarks[slot].reshape(NUM_LANDMARKS, NUM_COORDS)
+                    color = (180, 100, 255)  # Soft magenta for occluded tracking
+                    for start_idx, end_idx in self.mp_hands.HAND_CONNECTIONS:
+                        pt1 = (int(pts[start_idx, 0] * w), int(pts[start_idx, 1] * h))
+                        pt2 = (int(pts[end_idx, 0] * w), int(pts[end_idx, 1] * h))
+                        cv2.line(frame_bgr, pt1, pt2, color, 1, cv2.LINE_AA)
+                    for pt_idx in range(NUM_LANDMARKS):
+                        cx, cy = int(pts[pt_idx, 0] * w), int(pts[pt_idx, 1] * h)
+                        cv2.circle(frame_bgr, (cx, cy), 3, color, -1)
+                    wx, wy = int(pts[0, 0] * w), int(pts[0, 1] * h)
+                    cv2.putText(
+                        frame_bgr,
+                        "Left (Tracked)" if slot == 0 else "Right (Tracked)",
+                        (wx - 25, wy + 25),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.45,
+                        color,
+                        1,
                     )
 
         return frame_bgr
