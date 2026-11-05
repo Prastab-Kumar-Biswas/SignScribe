@@ -32,7 +32,7 @@ TWO_HAND_LETTERS: set[str] = set("ABDEFGHKMNPQRSTVWXYZ")
 # Group 1 (Canonical: Hand 0 on Left, Hand 1 on Right in camera frame):
 CANONICAL_2HAND_LETTERS: set[str] = set("ABEPQSTXZ")
 # Group 2 (Inverted: Hand 0 on Right, Hand 1 on Left in camera frame):
-INVERTED_2HAND_LETTERS: set[str] = set("DFGHJKMNRWY")
+INVERTED_2HAND_LETTERS: set[str] = set("DFGHJKRWY")
 
 # 5 letters typically use ONE hand:
 ONE_HAND_LETTERS: set[str] = set("CILOU")
@@ -356,6 +356,21 @@ class GesturePredictor:
             if (d01_mid <= 0.10 and d01_mid < d01_idx) or (d10_mid <= 0.10 and d10_mid < d10_idx):
                 if label in {"T", "K", "P", "E"}:
                     label = "I"
+
+            # 7. Disambiguate M vs N using touching hand ring-finger geometry:
+            # In M, 3 fingers (Index, Middle, Ring) are placed on the base palm.
+            # In N, 2 fingers (Index, Middle) are placed on the base palm, with Ring curled into the fist.
+            # The touching hand is identified as the hand with the curled pinky (smaller wrist distance).
+            if label in {"M", "N"}:
+                pnk0 = float(np.linalg.norm(pts0[20] - pts0[0]))
+                pnk1 = float(np.linalg.norm(pts1[20] - pts1[0]))
+                t_pts = pts0 if pnk0 <= pnk1 else pts1
+                d_rng_mid = float(np.linalg.norm(t_pts[16] - t_pts[12]))
+                d_rng_pnk = float(np.linalg.norm(t_pts[16] - t_pts[20]))
+                if d_rng_mid - d_rng_pnk >= 0.17:
+                    label = "N"
+                else:
+                    label = "M"
 
             inference_ms = (time.perf_counter() - t_start) * 1000.0
             return label, confidence, inference_ms
