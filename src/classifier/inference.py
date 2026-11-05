@@ -64,6 +64,21 @@ def _mirror_hand(hand_feat: np.ndarray) -> np.ndarray:
     return mirr
 
 
+def _mirror_window(window: np.ndarray) -> np.ndarray:
+    """Horizontally mirror both hand slots in a (30, 126) window around their wrist x-coordinates."""
+    mirr = window.copy()
+    for t in range(mirr.shape[0]):
+        if np.any(mirr[t, :63] != 0):
+            wx0 = mirr[t, 0]
+            for i in range(21):
+                mirr[t, i * 3] = 2.0 * wx0 - mirr[t, i * 3]
+        if np.any(mirr[t, 63:] != 0):
+            wx1 = mirr[t, 63]
+            for i in range(21):
+                mirr[t, 63 + i * 3] = 2.0 * wx1 - mirr[t, 63 + i * 3]
+    return mirr
+
+
 def _classify_digit_geometry(pts: np.ndarray) -> str | None:
     """Classify 1-handed digits (0-9) using chirality-invariant Euclidean geometry.
 
@@ -231,7 +246,7 @@ class GesturePredictor:
         # ── CASE 1: Both hands are active (Two-Handed Gesture) ───────────────
         # When both hands have at least min_active_frames of presence, evaluate both
         # canonical (Slot 0=Left, Slot 1=Right) and inverted (Slot 0=Right, Slot 1=Left)
-        # orientations with physical spatial-aware arbitration.
+        # orientations along with their horizontally mirrored representations.
         # Group 1 (A, B, E, P, Q, S, T, X, Z) were recorded in canonical orientation.
         # Group 2 (D, F, G, H, J, K, M, N, R, W, Y) were recorded in inverted orientation.
         if h1_frames >= min_active_frames and h2_frames >= min_active_frames:
@@ -250,46 +265,43 @@ class GesturePredictor:
                 w_canon = w_swapped
                 w_invert = window
 
-            batch = np.stack([w_canon, w_invert], axis=0)
+            # Dual-chirality: evaluate both normal and mirrored representations:
+            w_canon_mirr = _mirror_window(w_canon)
+            w_invert_mirr = _mirror_window(w_invert)
+
+            batch = np.stack([w_canon, w_invert, w_canon_mirr, w_invert_mirr], axis=0)
             logits = self.model(torch.from_numpy(batch))
             if alphanumeric_only and self.word_indices:
                 logits[:, self.word_indices] = -float("inf")
             probs = torch.softmax(logits, dim=1).numpy()
 
-            p_canon, p_invert = probs[0], probs[1]
-            idx_canon, idx_invert = int(np.argmax(p_canon)), int(np.argmax(p_invert))
-            lbl_canon, conf_canon = self.label_names[idx_canon], float(p_canon[idx_canon])
-            lbl_invert, conf_invert = self.label_names[idx_invert], float(p_invert[idx_invert])
+            # Orientation score arbitration across 4 hypotheses:
+            # Hyp 0 (canon) & Hyp 2 (canon_mirr) are canonical orientation
+            # Hyp 1 (invert) & Hyp 3 (invert_mirr) are inverted orientation
+            scores = []
+            for i in range(4):
+                top_idx = int(np.argmax(probs[i]))
+                lbl = self.label_names[top_idx]
+                conf = float(probs[i, top_idx])
+                is_canon_hyp = (i in [0, 2])
+                if is_canon_hyp:
+                    s = conf if (lbl in CANONICAL_2HAND_LETTERS or lbl not in INVERTED_2HAND_LETTERS) else conf * 0.4
+                else:
+                    s = conf if (lbl in INVERTED_2HAND_LETTERS or lbl not in CANONICAL_2HAND_LETTERS) else conf * 0.4
+                scores.append((s, lbl, conf, probs[i]))
 
-            # Apply orientation score arbitration:
-            # - For canonical orientation, favor Group 1 letters and general words.
-            #   Penalize inverted letters appearing in the canonical tensor (e.g. H hallucinating for F).
-            # - For inverted orientation, favor Group 2 letters and general words.
-            #   Penalize canonical letters appearing in the inverted tensor (e.g. X hallucinating for E).
-            score_canon = (
-                conf_canon
-                if (lbl_canon in CANONICAL_2HAND_LETTERS or lbl_canon not in INVERTED_2HAND_LETTERS)
-                else conf_canon * 0.4
-            )
-            score_invert = (
-                conf_invert
-                if (lbl_invert in INVERTED_2HAND_LETTERS or lbl_invert not in CANONICAL_2HAND_LETTERS)
-                else conf_invert * 0.4
-            )
+            best_s, label, confidence, best_probs = max(scores, key=lambda x: x[0])
 
-            label, confidence = (
-                (lbl_canon, conf_canon)
-                if score_canon >= score_invert
-                else (lbl_invert, conf_invert)
-            )
+            # Extract key physical measurements:
+            pts0 = window[0, :63].reshape(21, 3)
+            pts1 = window[0, 63:].reshape(21, 3)
+            wrist_dy = abs(pts0[0, 1] - pts1[0, 1])
 
             # ── Disambiguation rules for visually similar pairs ──
             # 1. Disambiguate F vs X using extended finger count:
             # F requires 2 extended fingers per hand (>= 2 on either hand).
             # X requires exactly 1 extended finger per hand (c0 == 1 and c1 == 1).
             if label in {"F", "X"}:
-                pts0 = window[0, :63].reshape(21, 3)
-                pts1 = window[0, 63:].reshape(21, 3)
                 c0 = _count_extended_fingers(pts0)
                 c1 = _count_extended_fingers(pts1)
                 if c0 == 1 and c1 == 1:
@@ -301,9 +313,6 @@ class GesturePredictor:
             # In K, the reaching hand is placed high above the base hand (|dy| >= 0.35).
             # In E, both hands are held level horizontally (|dy| <= 0.25).
             if label in {"E", "K"}:
-                pts0 = window[0, :63].reshape(21, 3)
-                pts1 = window[0, 63:].reshape(21, 3)
-                wrist_dy = abs(pts0[0, 1] - pts1[0, 1])
                 if wrist_dy >= 0.35:
                     label = "K"
                 elif wrist_dy <= 0.25:
@@ -313,13 +322,40 @@ class GesturePredictor:
             # In J, the base palm is low (y ~ 0.89) and drawing hand is high (y ~ 0.52), |dy| >= 0.28.
             # In Q, both hands are held level horizontally (|dy| <= 0.22).
             if label in {"J", "Q"}:
-                pts0 = window[0, :63].reshape(21, 3)
-                pts1 = window[0, 63:].reshape(21, 3)
-                wrist_dy = abs(pts0[0, 1] - pts1[0, 1])
                 if wrist_dy >= 0.28:
                     label = "J"
                 elif wrist_dy <= 0.22:
                     label = "Q"
+
+            # 4. Disambiguate D vs X using vertical wrist separation:
+            # In X, both index fingers cross level horizontally (|dy| <= 0.08).
+            # In D, one hand forms the upright vertical stem (|dy| >= 0.14).
+            if label in {"D", "X"}:
+                if wrist_dy >= 0.14:
+                    label = "D"
+                elif wrist_dy <= 0.08:
+                    label = "X"
+
+            # 5. Disambiguate J vs P, W, G, X:
+            # In J, the drawing hand is placed high above the base palm (wrist_dy >= 0.28).
+            # In W and X, both wrists are level horizontally (|dy| <= 0.08).
+            # In G, both hands are closed fists (c0 == 0 and c1 == 0).
+            # In P, wrists are close horizontally (|dy| <= 0.22).
+            idx_J = self.label_to_idx.get("J", -1)
+            max_p_J = max(p[idx_J] for _, _, _, p in scores) if idx_J >= 0 else 0.0
+            if label in {"P", "W", "G", "X", "A", "Q"} and wrist_dy >= 0.28 and max_p_J >= 0.20:
+                label = "J"
+                confidence = max(confidence, max_p_J)
+
+            # 6. Two-handed ISL 'I' (dominant index touching middle finger of base hand):
+            # In ISL, vowel I is formed by touching the middle fingertip of the base hand.
+            d01_mid = float(np.linalg.norm(pts0[8] - pts1[12]))
+            d10_mid = float(np.linalg.norm(pts1[8] - pts0[12]))
+            d01_idx = float(np.linalg.norm(pts0[8] - pts1[8]))
+            d10_idx = float(np.linalg.norm(pts1[8] - pts0[8]))
+            if (d01_mid <= 0.10 and d01_mid < d01_idx) or (d10_mid <= 0.10 and d10_mid < d10_idx):
+                if label in {"T", "K", "P", "E"}:
+                    label = "I"
 
             inference_ms = (time.perf_counter() - t_start) * 1000.0
             return label, confidence, inference_ms
@@ -344,6 +380,8 @@ class GesturePredictor:
         thumb_spread = float(np.linalg.norm(pts_active[4] - pts_active[5]))
         d_th_idx = float(np.linalg.norm(pts_active[4] - pts_active[8]))
         ext_idx = np.linalg.norm(pts_active[8] - wrist) > np.linalg.norm(pts_active[6] - wrist) * 1.15
+        ext_mid = np.linalg.norm(pts_active[12] - wrist) > np.linalg.norm(pts_active[10] - wrist) * 1.15
+        ext_rng = np.linalg.norm(pts_active[16] - wrist) > np.linalg.norm(pts_active[14] - wrist) * 1.15
         ext_pnk = np.linalg.norm(pts_active[20] - wrist) > np.linalg.norm(pts_active[18] - wrist) * 1.15
 
         # Build 6 hypotheses in a single batch pass:
@@ -396,8 +434,11 @@ class GesturePredictor:
             return "C", best_letter_conf, inference_ms
 
         # 3. Disambiguate Digit '1' vs Letter 'I':
-        # In letter 'I', pinky is extended and index is curled down.
+        # In letter 'I' (single-handed), ONLY the pinky is extended and other fingers are folded.
         # In digit '1', index is pointing up and thumb is folded across fist.
+        if ext_pnk and not ext_idx and not ext_mid and not ext_rng:
+            inference_ms = (time.perf_counter() - t_start) * 1000.0
+            return "I", max(best_letter_conf, 0.95), inference_ms
         if best_letter_lbl == "I" and ext_pnk and not ext_idx:
             inference_ms = (time.perf_counter() - t_start) * 1000.0
             return "I", best_letter_conf, inference_ms
