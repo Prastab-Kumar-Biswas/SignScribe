@@ -35,7 +35,7 @@ CANONICAL_2HAND_LETTERS: set[str] = set("ABEPQSTXZ")
 INVERTED_2HAND_LETTERS: set[str] = set("DFGHJKRWY")
 
 # 6 letters typically use ONE hand:
-ONE_HAND_LETTERS: set[str] = set("CILOUV")
+ONE_HAND_LETTERS: set[str] = set("CILOU")
 DIGIT_LABELS: set[str] = {str(d) for d in range(10)}
 ALPHANUMERIC_LABELS: set[str] = DIGIT_LABELS | set("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
@@ -515,11 +515,18 @@ class GesturePredictor:
             inference_ms = (time.perf_counter() - t_start) * 1000.0
             return "U", max(best_letter_conf, 0.95), inference_ms
 
-        # 5. Letter 'V' single-handed check (resolves 'V' being intercepted by digit '2'):
-        # In 'V', index and middle are extended and spread in a V-shape (d_idx_mid >= 0.075).
-        # In 'U', index and middle are held close together side-by-side (d_idx_mid <= 0.065).
-        if ext_idx and ext_mid and not ext_rng and not ext_pnk and d_idx_mid >= 0.075:
-            if best_letter_lbl == "V" or d_idx_mid >= 0.110:
+        # 5. Letter 'V' single-handed check (resolves 'V' vs Digit '2'):
+        # In 'V', index and middle are extended and spread in a distinct V-shape with a significant gap.
+        # When fingers are close or parallel (d_idx_mid < 0.125 or spread_ratio < 1.70, e.g. digit '2'),
+        # it must NOT detect 'V', falling through to Digit '2' or 'U'.
+        d_mcp = float(np.linalg.norm(pts_active[5] - pts_active[9]))
+        spread_ratio = d_idx_mid / (d_mcp + 1e-6)
+        if ext_idx and ext_mid and not ext_rng and not ext_pnk:
+            has_significant_gap = (
+                (d_idx_mid >= 0.125 and spread_ratio >= 1.70)
+                or (d_idx_mid >= 0.150 and spread_ratio >= 1.50)
+            )
+            if has_significant_gap:
                 inference_ms = (time.perf_counter() - t_start) * 1000.0
                 return "V", max(best_letter_conf, 0.95), inference_ms
 
@@ -542,7 +549,7 @@ class GesturePredictor:
                 inference_ms = (time.perf_counter() - t_start) * 1000.0
                 return geom_digit, max(best_clean_conf, 0.95), inference_ms
             elif geom_digit in {"2", "3", "4", "5"}:
-                if best_clean_lbl == "1" and best_clean_conf >= 0.95:
+                if geom_digit in {"4", "5"} and best_clean_lbl == "1" and best_clean_conf >= 0.95:
                     inference_ms = (time.perf_counter() - t_start) * 1000.0
                     return "1", best_clean_conf, inference_ms
                 inference_ms = (time.perf_counter() - t_start) * 1000.0
