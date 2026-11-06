@@ -25,8 +25,8 @@ from src.config import (
 from src.classifier.model import GestureClassifier
 
 # In Indian Sign Language (ISL):
-# 21 letters require BOTH hands:
-TWO_HAND_LETTERS: set[str] = set("ABDEFGHKMNPQRSTVWXYZ")
+# 20 letters require BOTH hands:
+TWO_HAND_LETTERS: set[str] = set("ABDEFGHKMNPQRSTWXYZ")
 
 # In the training dataset, two-hand signs are split across two spatial orientations:
 # Group 1 (Canonical: Hand 0 on Left, Hand 1 on Right in camera frame):
@@ -34,8 +34,8 @@ CANONICAL_2HAND_LETTERS: set[str] = set("ABEPQSTXZ")
 # Group 2 (Inverted: Hand 0 on Right, Hand 1 on Left in camera frame):
 INVERTED_2HAND_LETTERS: set[str] = set("DFGHJKRWY")
 
-# 5 letters typically use ONE hand:
-ONE_HAND_LETTERS: set[str] = set("CILOU")
+# 6 letters typically use ONE hand:
+ONE_HAND_LETTERS: set[str] = set("CILOUV")
 DIGIT_LABELS: set[str] = {str(d) for d in range(10)}
 ALPHANUMERIC_LABELS: set[str] = DIGIT_LABELS | set("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
@@ -515,7 +515,25 @@ class GesturePredictor:
             inference_ms = (time.perf_counter() - t_start) * 1000.0
             return "U", max(best_letter_conf, 0.95), inference_ms
 
-        # 5. Pure Chirality-Invariant Geometric Digit Disambiguation:
+        # 5. Letter 'V' single-handed check (resolves 'V' being intercepted by digit '2'):
+        # In 'V', index and middle are extended and spread in a V-shape (d_idx_mid >= 0.075).
+        # In 'U', index and middle are held close together side-by-side (d_idx_mid <= 0.065).
+        if ext_idx and ext_mid and not ext_rng and not ext_pnk and d_idx_mid >= 0.075:
+            if best_letter_lbl == "V" or d_idx_mid >= 0.110:
+                inference_ms = (time.perf_counter() - t_start) * 1000.0
+                return "V", max(best_letter_conf, 0.95), inference_ms
+
+        # 6. Letter 'W' single-handed check (resolves 'W' being intercepted by digit '6'):
+        # In single-handed 'W', 3 fingers (Index, Middle, Ring) are extended upwards in a W-shape.
+        # In ISL digit '6', the thumb tip touches the pinky tip tightly (d_th_pnk <= 0.045).
+        # In letter 'W', the thumb is folded across the palm (d_th_pnk > 0.045) and fingers are spread.
+        d_th_pnk = float(np.linalg.norm(pts_active[4] - pts_active[20]))
+        if ext_idx and ext_mid and ext_rng and not ext_pnk:
+            if d_th_pnk > 0.048:
+                inference_ms = (time.perf_counter() - t_start) * 1000.0
+                return "W", 0.95, inference_ms
+
+        # 7. Pure Chirality-Invariant Geometric Digit Disambiguation:
         # Euclidean fingertip distances provide 100% symmetric accuracy on both hands.
         geom_digit = _classify_digit_geometry(pts_active)
         if geom_digit is not None:
