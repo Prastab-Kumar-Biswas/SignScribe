@@ -49,9 +49,9 @@ def run():
 
     tracker = HandTracker(
         model_complexity=1,
-        detection_confidence=0.5,
-        tracking_confidence=0.35,
-        max_persistence_frames=4,
+        detection_confidence=0.6,
+        tracking_confidence=0.55,
+        max_persistence_frames=2,
     )
     window_buffer = SlidingWindowBuffer(
         overlap=WINDOW_SIZE // 2,
@@ -108,8 +108,8 @@ def run():
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             features, results = tracker.extract_landmarks(frame_rgb)
 
-            num_hands = len(results.multi_hand_landmarks) if (results and results.multi_hand_landmarks) else 0
-            has_active_hands = (num_hands > 0) or bool(np.any(features != 0))
+            num_hands = tracker.num_active_hands
+            has_active_hands = (num_hands > 0)
 
             # Hand-gated window accumulation
             window = window_buffer.add_frame(features, has_hands=has_active_hands)

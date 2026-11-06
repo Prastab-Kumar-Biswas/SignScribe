@@ -143,7 +143,12 @@ init_session_state()
 def load_hand_tracker():
     """Load MediaPipe hand tracker (cached across reruns)."""
     from src.capture.hand_tracker import HandTracker
-    return HandTracker(detection_confidence=0.5, tracking_confidence=0.5)
+    return HandTracker(
+        model_complexity=1,
+        detection_confidence=0.6,
+        tracking_confidence=0.55,
+        max_persistence_frames=2,
+    )
 
 
 @st.cache_resource
@@ -391,7 +396,7 @@ def main():
         features, results = tracker.extract_landmarks(frame_rgb)
         mp_ms = (time.perf_counter() - t_mp_start) * 1000.0
 
-        num_hands = len(results.multi_hand_landmarks) if (results and results.multi_hand_landmarks) else 0
+        num_hands = tracker.num_active_hands
 
         # Feed buffer with hand gating
         window = st.session_state.window_buffer.add_frame(features, has_hands=(num_hands > 0))
