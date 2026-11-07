@@ -11,6 +11,7 @@ Usage:
 
 from __future__ import annotations
 
+import inspect
 import sys
 import time
 from pathlib import Path
@@ -18,6 +19,13 @@ from pathlib import Path
 import cv2
 import numpy as np
 import streamlit as st
+
+# Detect whether installed Streamlit uses modern `use_container_width` or legacy `use_column_width` for st.image
+_IMAGE_WIDTH_KWARGS = (
+    {"use_container_width": True}
+    if "use_container_width" in inspect.signature(st.image).parameters
+    else {"use_column_width": True}
+)
 
 # Ensure project root is on sys.path
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -472,12 +480,9 @@ def main():
                 2,
             )
 
-        # Render display image directly to Streamlit image element (backward-compatible across Streamlit versions)
+        # Render display image directly to Streamlit image element
         display_rgb = cv2.cvtColor(frame_display, cv2.COLOR_BGR2RGB)
-        try:
-            video_placeholder.image(display_rgb, channels="RGB", use_column_width=True)
-        except TypeError:
-            video_placeholder.image(display_rgb, channels="RGB", use_container_width=True)
+        video_placeholder.image(display_rgb, channels="RGB", **_IMAGE_WIDTH_KWARGS)
 
         hand_info = (
             "🟢 Both Hands (2-Hand Sign)"
