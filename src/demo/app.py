@@ -472,9 +472,12 @@ def main():
                 2,
             )
 
-        # Render display image directly to Streamlit image element
+        # Render display image directly to Streamlit image element (backward-compatible across Streamlit versions)
         display_rgb = cv2.cvtColor(frame_display, cv2.COLOR_BGR2RGB)
-        video_placeholder.image(display_rgb, channels="RGB", use_container_width=True)
+        try:
+            video_placeholder.image(display_rgb, channels="RGB", use_column_width=True)
+        except TypeError:
+            video_placeholder.image(display_rgb, channels="RGB", use_container_width=True)
 
         hand_info = (
             "🟢 Both Hands (2-Hand Sign)"
