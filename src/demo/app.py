@@ -272,6 +272,32 @@ def render_sidebar():
     return classifier, conf_threshold, stability_frames, int(cam_index), alphanumeric_only
 
 
+# ── Helper Display Functions ────────────────────────────────────────
+
+def _render_text_card(placeholder, text: str):
+    """Render the generated text card inside its placeholder."""
+    if text:
+        placeholder.markdown(
+            f'<div class="text-output-card">{text}</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        placeholder.markdown(
+            '<div class="text-output-card placeholder-text">'
+            'Start the camera and sign to generate text here...</div>',
+            unsafe_allow_html=True,
+        )
+
+
+def _render_tokens(placeholder, tokens: list[str]):
+    """Render recognized token badges inside their placeholder."""
+    if tokens:
+        badge_html = " ".join(f'<span class="token-badge">{t}</span>' for t in tokens[-15:])
+        placeholder.markdown(badge_html, unsafe_allow_html=True)
+    else:
+        placeholder.markdown("<span style='color: #64748b;'>No signs recorded yet.</span>", unsafe_allow_html=True)
+
+
 # ── Main Application ────────────────────────────────────────────────
 
 def main():
@@ -295,67 +321,54 @@ def main():
 
         col_btn1, col_btn2 = st.columns([1, 1])
         with col_btn1:
-            start_clicked = st.button(
-                "▶️ Start Camera" if not st.session_state.running else "⏹️ Stop Camera",
-                type="primary",
-                use_container_width=True,
-            )
-            if start_clicked:
-                st.session_state.running = not st.session_state.running
-                if not st.session_state.running:
+            if not st.session_state.running:
+                if st.button("▶️ Start Camera", type="primary", use_container_width=True, key="btn_start"):
+                    st.session_state.running = True
+                    st.rerun()
+            else:
+                if st.button("⏹️ Stop Camera", type="secondary", use_container_width=True, key="btn_stop"):
+                    st.session_state.running = False
                     _release_camera()
                     st.session_state.last_pred_label = "IDLE"
                     st.session_state.last_pred_conf = 0.0
                     st.rerun()
 
         with col_btn2:
-            if st.button("🔄 Reset Text", use_container_width=True):
+            if st.button("🔄 Reset Text", use_container_width=True, key="btn_reset"):
                 gen.reset()
                 st.session_state.last_committed_token = ""
-                st.rerun()
+                st.session_state.last_pred_label = "IDLE"
+                st.session_state.last_pred_conf = 0.0
+                _render_text_card(text_placeholder, gen.get_text())
+                _render_tokens(tokens_placeholder, gen.get_raw_tokens())
 
         video_placeholder = st.empty()
         status_placeholder = st.empty()
 
     with col_output:
         st.markdown("### 📝 Generated Text")
-
-        current_text = gen.get_text()
-        if current_text:
-            st.markdown(
-                f'<div class="text-output-card">{current_text}</div>',
-                unsafe_allow_html=True,
-            )
-        else:
-            st.markdown(
-                '<div class="text-output-card placeholder-text">'
-                'Start the camera and sign to generate text here...</div>',
-                unsafe_allow_html=True,
-            )
+        text_placeholder = st.empty()
+        _render_text_card(text_placeholder, gen.get_text())
 
         # Quick action controls
         st.markdown("<br>", unsafe_allow_html=True)
         col_act1, col_act2, col_act3 = st.columns(3)
         with col_act1:
-            if st.button("␣ Add Space", use_container_width=True):
+            if st.button("␣ Add Space", use_container_width=True, key="btn_space"):
                 gen.add_space()
-                st.rerun()
+                _render_text_card(text_placeholder, gen.get_text())
         with col_act2:
-            if st.button("⌫ Backspace", use_container_width=True):
+            if st.button("⌫ Backspace", use_container_width=True, key="btn_backspace"):
                 gen.backspace()
-                st.rerun()
+                _render_text_card(text_placeholder, gen.get_text())
         with col_act3:
-            if st.button("📋 Copy Text", use_container_width=True):
-                st.toast("Text ready to copy from output box above!")
+            if st.button("📋 Copy Text", use_container_width=True, key="btn_copy"):
+                st.toast("Text copied or ready to copy from the output card above!")
 
         # Raw Token Badges
         st.markdown("#### Recognized Signs:")
-        tokens = gen.get_raw_tokens()
-        if tokens:
-            badge_html = " ".join(f'<span class="token-badge">{t}</span>' for t in tokens[-15:])
-            st.markdown(badge_html, unsafe_allow_html=True)
-        else:
-            st.markdown("<span style='color: #64748b;'>No signs recorded yet.</span>", unsafe_allow_html=True)
+        tokens_placeholder = st.empty()
+        _render_tokens(tokens_placeholder, gen.get_raw_tokens())
 
     # ── Camera Processing Loop ──────────────────────────────────────
     if st.session_state.running:
@@ -373,6 +386,11 @@ def main():
                 max_idle_frames=6,
             )
 
+        # Check if camera index changed
+        if st.session_state.get("active_cam_index") != cam_index:
+            _release_camera()
+            st.session_state["active_cam_index"] = cam_index
+
         if st.session_state.camera is None:
             cap = cv2.VideoCapture(cam_index)
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
@@ -386,125 +404,144 @@ def main():
             _release_camera()
             return
 
-        t_frame_start = time.perf_counter()
-        ret, frame_bgr = cap.read()
-        if not ret:
-            st.warning("Failed to grab camera frame.")
-            st.session_state.running = False
-            _release_camera()
-            return
+        failed_reads = 0
+        try:
+            while st.session_state.running:
+                t_frame_start = time.perf_counter()
+                ret, frame_bgr = cap.read()
+                if not ret:
+                    failed_reads += 1
+                    if failed_reads > 10:
+                        status_placeholder.error("Lost connection to webcam.")
+                        st.session_state.running = False
+                        break
+                    time.sleep(0.05)
+                    continue
+                failed_reads = 0
 
-        # HORIZONTAL FLIP: Mirror the camera so it acts like a natural selfie mirror
-        # and aligns with MediaPipe's mirror-mode handedness detection.
-        frame_bgr = cv2.flip(frame_bgr, 1)
-        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+                # HORIZONTAL FLIP: Mirror the camera so it acts like a natural selfie mirror
+                # and aligns with MediaPipe's mirror-mode handedness detection.
+                frame_bgr = cv2.flip(frame_bgr, 1)
+                frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
-        # MediaPipe landmark extraction
-        t_mp_start = time.perf_counter()
-        features, results = tracker.extract_landmarks(frame_rgb)
-        mp_ms = (time.perf_counter() - t_mp_start) * 1000.0
+                # MediaPipe landmark extraction
+                t_mp_start = time.perf_counter()
+                features, results = tracker.extract_landmarks(frame_rgb)
+                mp_ms = (time.perf_counter() - t_mp_start) * 1000.0
 
-        num_hands = tracker.num_active_hands
+                num_hands = tracker.num_active_hands
 
-        # Feed buffer with hand gating
-        window = st.session_state.window_buffer.add_frame(features, has_hands=(num_hands > 0))
+                # Feed buffer with hand gating
+                window = st.session_state.window_buffer.add_frame(features, has_hands=(num_hands > 0))
 
-        if window is not None and num_hands > 0:
-            pred_label, pred_conf, clf_ms = classifier.predict(
-                window, min_active_frames=12, alphanumeric_only=alphanumeric_only
-            )
+                text_updated = False
+                if window is not None and num_hands > 0:
+                    pred_label, pred_conf, clf_ms = classifier.predict(
+                        window, min_active_frames=12, alphanumeric_only=alphanumeric_only
+                    )
 
-            if pred_label != "IDLE" and pred_conf >= conf_threshold:
-                if pred_label == st.session_state.last_pred_label:
-                    st.session_state.consecutive_same += 1
-                else:
-                    st.session_state.consecutive_same = 1
-                    st.session_state.last_pred_label = pred_label
+                    if pred_label != "IDLE" and pred_conf >= conf_threshold:
+                        if pred_label == st.session_state.last_pred_label:
+                            st.session_state.consecutive_same += 1
+                        else:
+                            st.session_state.consecutive_same = 1
+                            st.session_state.last_pred_label = pred_label
 
-                # Stability confirmation
-                if st.session_state.consecutive_same >= stability_frames:
-                    # Debounce: avoid repeatedly emitting the exact same sign while holding
-                    if pred_label != st.session_state.last_committed_token:
-                        gen.add_token(pred_label)
-                        st.session_state.last_committed_token = pred_label
-                    st.session_state.consecutive_same = 0
-            else:
-                if pred_label == "IDLE":
+                        # Stability confirmation
+                        if st.session_state.consecutive_same >= stability_frames:
+                            # Debounce: avoid repeatedly emitting the exact same sign while holding
+                            if pred_label != st.session_state.last_committed_token:
+                                gen.add_token(pred_label)
+                                st.session_state.last_committed_token = pred_label
+                                text_updated = True
+                            st.session_state.consecutive_same = 0
+                    else:
+                        if pred_label == "IDLE":
+                            st.session_state.last_pred_label = "IDLE"
+                            st.session_state.last_pred_conf = 0.0
+
+                    st.session_state.last_pred_conf = pred_conf
+
+                elif num_hands == 0:
                     st.session_state.last_pred_label = "IDLE"
                     st.session_state.last_pred_conf = 0.0
+                    st.session_state.consecutive_same = 0
+                    # Allow signing the same sign again after hands are lowered
+                    st.session_state.last_committed_token = ""
 
-            st.session_state.last_pred_conf = pred_conf
+                # Push updated text and tokens to UI without reloading the page
+                if text_updated:
+                    _render_text_card(text_placeholder, gen.get_text())
+                    _render_tokens(tokens_placeholder, gen.get_raw_tokens())
 
-        elif num_hands == 0:
-            st.session_state.last_pred_label = "IDLE"
-            st.session_state.last_pred_conf = 0.0
-            st.session_state.consecutive_same = 0
-            # Allow signing the same sign again after hands are lowered
-            st.session_state.last_committed_token = ""
+                # Draw landmarks on display frame
+                frame_display = tracker.draw_landmarks(frame_bgr.copy(), results)
 
-        # Draw landmarks on display frame
-        frame_display = tracker.draw_landmarks(frame_bgr.copy(), results)
+                # Visual HUD overlay on video
+                if num_hands == 2:
+                    status_text = "2 Hands (Two-Hand Gesture)"
+                    color = (0, 255, 0)
+                elif num_hands == 1:
+                    status_text = "1 Hand (1-Hand Sign: C,I,L,O,U,V or 0-9)"
+                    color = (0, 200, 255)
+                else:
+                    status_text = "Idle (No hands)"
+                    color = (128, 128, 128)
 
-        # Visual HUD overlay on video
-        if num_hands == 2:
-            status_text = "2 Hands (Two-Hand Gesture)"
-            color = (0, 255, 0)
-        elif num_hands == 1:
-            status_text = "1 Hand (1-Hand Sign: C,I,L,O,U,V or 0-9)"
-            color = (0, 200, 255)
-        else:
-            status_text = "Idle (No hands)"
-            color = (128, 128, 128)
+                mode_tag = "Chars" if alphanumeric_only else "All 97"
+                cv2.putText(
+                    frame_display,
+                    f"[{mode_tag}] Hands: {status_text} | MP: {mp_ms:.0f}ms",
+                    (15, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    color,
+                    2,
+                )
 
-        mode_tag = "Chars" if alphanumeric_only else "All 97"
-        cv2.putText(
-            frame_display,
-            f"[{mode_tag}] Hands: {status_text} | MP: {mp_ms:.0f}ms",
-            (15, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            color,
-            2,
-        )
+                if st.session_state.last_pred_label != "IDLE" and st.session_state.last_pred_conf > 0:
+                    is_2h = classifier.is_two_hand_sign(st.session_state.last_pred_label)
+                    sign_tag = "[2-Hand]" if is_2h else "[1-Hand]"
+                    cv2.putText(
+                        frame_display,
+                        f"Sign: {st.session_state.last_pred_label} ({st.session_state.last_pred_conf:.0%}) {sign_tag}",
+                        (15, 65),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.75,
+                        (0, 255, 255),
+                        2,
+                    )
 
-        if st.session_state.last_pred_label != "IDLE" and st.session_state.last_pred_conf > 0:
-            is_2h = classifier.is_two_hand_sign(st.session_state.last_pred_label)
-            sign_tag = "[2-Hand]" if is_2h else "[1-Hand]"
-            cv2.putText(
-                frame_display,
-                f"Sign: {st.session_state.last_pred_label} ({st.session_state.last_pred_conf:.0%}) {sign_tag}",
-                (15, 65),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.75,
-                (0, 255, 255),
-                2,
-            )
+                # Render display image directly to Streamlit image element
+                display_rgb = cv2.cvtColor(frame_display, cv2.COLOR_BGR2RGB)
+                video_placeholder.image(display_rgb, channels="RGB", **_IMAGE_WIDTH_KWARGS)
 
-        # Render display image directly to Streamlit image element
-        display_rgb = cv2.cvtColor(frame_display, cv2.COLOR_BGR2RGB)
-        video_placeholder.image(display_rgb, channels="RGB", **_IMAGE_WIDTH_KWARGS)
+                hand_info = (
+                    "🟢 Both Hands (2-Hand Sign)"
+                    if num_hands == 2
+                    else (
+                        "🟡 1 Hand (Note: A,B,D... need 2 hands)"
+                        if num_hands == 1
+                        else "⚪ Idle"
+                    )
+                )
+                status_placeholder.caption(
+                    f"⚡ {hand_info} | MP: {mp_ms:.1f}ms | Detected: **{st.session_state.last_pred_label}** "
+                    f"({st.session_state.last_pred_conf:.0%})"
+                )
 
-        hand_info = (
-            "🟢 Both Hands (2-Hand Sign)"
-            if num_hands == 2
-            else (
-                "🟡 1 Hand (Note: A,B,D... need 2 hands)"
-                if num_hands == 1
-                else "⚪ Idle"
-            )
-        )
-        status_placeholder.caption(
-            f"⚡ {hand_info} | MP: {mp_ms:.1f}ms | Detected: **{st.session_state.last_pred_label}** "
-            f"({st.session_state.last_pred_conf:.0%})"
-        )
+                # Regulate frame rate to TARGET_FPS
+                elapsed = time.perf_counter() - t_frame_start
+                frame_interval = 1.0 / TARGET_FPS
+                if elapsed < frame_interval:
+                    time.sleep(frame_interval - elapsed)
 
-        # Regulate frame rate to TARGET_FPS
-        elapsed = time.perf_counter() - t_frame_start
-        frame_interval = 1.0 / TARGET_FPS
-        if elapsed < frame_interval:
-            time.sleep(frame_interval - elapsed)
-
-        st.rerun()
+        finally:
+            if not st.session_state.running:
+                _release_camera()
+    else:
+        video_placeholder.info("📹 Camera is stopped. Click **▶️ Start Camera** above to begin.")
+        status_placeholder.caption("Status: Standby | Ready")
 
 
 if __name__ == "__main__":
