@@ -153,6 +153,7 @@ def init_session_state():
         "last_committed_token": "",
         "avg_fps": 0.0,
         "recent_latencies": [],
+        "active_cam_index": 0,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -397,6 +398,11 @@ def main():
             st.session_state.running = False
             return
 
+        # Check if camera index changed
+        if st.session_state.get("active_cam_index") != cam_index:
+            _release_camera()
+            st.session_state["active_cam_index"] = cam_index
+
         from src.buffering.sliding_window import SlidingWindowBuffer
 
         if st.session_state.window_buffer is None:
@@ -405,11 +411,6 @@ def main():
                 min_active_ratio=0.6,
                 max_idle_frames=6,
             )
-
-        # Check if camera index changed
-        if st.session_state.get("active_cam_index") != cam_index:
-            _release_camera()
-            st.session_state["active_cam_index"] = cam_index
 
         if st.session_state.camera is None:
             cap = cv2.VideoCapture(cam_index)
@@ -451,6 +452,14 @@ def main():
                 mp_ms = (time.perf_counter() - t_mp_start) * 1000.0
 
                 num_hands = tracker.num_active_hands
+
+                # Ensure buffer is available
+                if st.session_state.window_buffer is None:
+                    st.session_state.window_buffer = SlidingWindowBuffer(
+                        overlap=WINDOW_SIZE // 2,
+                        min_active_ratio=0.6,
+                        max_idle_frames=6,
+                    )
 
                 # Feed buffer with hand gating
                 window = st.session_state.window_buffer.add_frame(features, has_hands=(num_hands > 0))
