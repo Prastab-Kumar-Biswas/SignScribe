@@ -113,6 +113,26 @@ st.markdown("""
         border-radius: 4px;
         font-weight: bold;
     }
+    /* Completely eliminate Streamlit stale-element dimming and transition flashing */
+    .stApp, .stApp * {
+        opacity: 1 !important;
+        transition: none !important;
+    }
+    div[data-testid="stImage"] {
+        opacity: 1 !important;
+        transition: none !important;
+        background-color: #0f172a;
+        border-radius: 8px;
+    }
+    div[data-testid="stImage"] img {
+        opacity: 1 !important;
+        transition: none !important;
+        border-radius: 8px;
+    }
+    /* Hide top-right running indicator pulse to avoid distracting UI shifts */
+    div[data-testid="stStatusWidget"] {
+        visibility: hidden !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -404,6 +424,7 @@ def main():
             _release_camera()
             return
 
+        last_rendered_status = ""
         failed_reads = 0
         try:
             while st.session_state.running:
@@ -514,7 +535,7 @@ def main():
 
                 # Render display image directly to Streamlit image element
                 display_rgb = cv2.cvtColor(frame_display, cv2.COLOR_BGR2RGB)
-                video_placeholder.image(display_rgb, channels="RGB", **_IMAGE_WIDTH_KWARGS)
+                video_placeholder.image(display_rgb, channels="RGB", output_format="JPEG", **_IMAGE_WIDTH_KWARGS)
 
                 hand_info = (
                     "🟢 Both Hands (2-Hand Sign)"
@@ -525,10 +546,13 @@ def main():
                         else "⚪ Idle"
                     )
                 )
-                status_placeholder.caption(
+                current_status = (
                     f"⚡ {hand_info} | MP: {mp_ms:.1f}ms | Detected: **{st.session_state.last_pred_label}** "
                     f"({st.session_state.last_pred_conf:.0%})"
                 )
+                if current_status != last_rendered_status:
+                    status_placeholder.caption(current_status)
+                    last_rendered_status = current_status
 
                 # Regulate frame rate to TARGET_FPS
                 elapsed = time.perf_counter() - t_frame_start
